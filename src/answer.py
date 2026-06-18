@@ -1,11 +1,14 @@
-"""Answer support questions from retrieved Day 1 corpus evidence."""
+"""Answer support questions from retrieved Ask Mode corpus evidence."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from time import perf_counter
+from typing import Literal, TypedDict
 
 from .ingest import DEFAULT_INDEX_PATH
 from .retrieve import (
@@ -24,13 +27,65 @@ MIN_RELEVANCE_SCORES: dict[RetrieverName, float] = {
     "hybrid": 0.2,
 }
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
+NUMBER_RE = re.compile(
+    r"(?<![\w.])\d+(?:\.\d+)?(?:\s*(?:%|％|days?|business\s+days?|"
+    r"hours?|minutes?|years?|months?|天|日|個工作天|小時|分鐘|年|月))?",
+    re.IGNORECASE,
+)
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s*")
+Confidence = Literal["high", "medium", "low"]
+
+
+class Citation(TypedDict):
+    chunk_id: str
+    doc: str
+    section: str
+    section_zh: str
+    section_slug: str
+    page: int | None
+    text: str
+
+
+class GroundednessChecks(TypedDict):
+    has_citation: bool
+    citations_from_retrieved_chunks: bool
+    numeric_claims_supported: bool
+    refusal_supported: bool
+
+
+class GroundednessResult(TypedDict):
+    status: Literal["supported", "unsupported"]
+    checks: GroundednessChecks
+    unsupported_claims: list[str]
 
 
 @dataclass(frozen=True)
-class Answer:
-    text: str
-    citations: list[SearchResult]
+class AnswerResult:
+    question: str
+    retriever: RetrieverName
+    answer: str
     refused: bool
+    refusal_reason: str | None
+    requires_human_review: bool
+    confidence: Confidence
+    citations: list[Citation]
+    retrieved_chunks: list[SearchResult]
+    groundedness: GroundednessResult
+    warnings: list[str]
+    latency_ms: float
+
+    @property
+    def text(self) -> str:
+        """Compatibility alias for the Day 1 answer contract."""
+
+        return self.answer
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+# Backward-compatible import name.
+Answer = AnswerResult
 
 
 def _is_chinese(question: str) -> bool:
@@ -125,7 +180,15 @@ def _refusal_evidence(
 
     exact_price = _contains_any(
         question,
-        ("how much", "price in", "monthly price", "exact price", "價格是多少", "多少台幣", "精確價格"),
+        (
+            "how much",
+            "price in",
+            "monthly price",
+            "exact price",
+            "價格是多少",
+            "多少台幣",
+            "精確價格",
+        ),
     )
     if exact_price:
         evidence = _result_with_slug(
@@ -157,6 +220,248 @@ def _related_citations(
     return citations
 
 
+def _citation(result: SearchResult) -> Citation:
+    return {
+        "chunk_id": result["chunk_id"],
+        "doc": result["doc"],
+        "section": result["section"],
+        "section_zh": result["section_zh"],
+        "section_slug": result["section_slug"],
+        "page": result["page"],
+        "text": result["text"],
+    }
+
+
+def _normalized_numbers(text: str) -> set[str]:
+    return {
+        re.sub(r"\s+", "", match.group(0).lower()).replace("％", "%")
+        for match in NUMBER_RE.finditer(text)
+    }
+
+
+def _states_insufficient_evidence(text: str) -> bool:
+    return _contains_any(
+        text,
+        (
+            "沒有足夠依據",
+            "不足以回答",
+            "does not contain enough evidence",
+            "insufficient evidence",
+            "not enough evidence",
+        ),
+    )
+
+
+def check_groundedness(
+    answer: str,
+    *,
+    refused: bool,
+    citations: list[Citation],
+    retrieved_chunks: list[SearchResult],
+) -> tuple[GroundednessResult, list[str]]:
+    """Validate mechanical answer-to-evidence invariants without an LLM judge."""
+
+    has_citation = bool(citations)
+    retrieved_pairs = {
+        (chunk["chunk_id"], chunk["doc"]) for chunk in retrieved_chunks
+    }
+    citations_from_retrieved = all(
+        (citation["chunk_id"], citation["doc"]) in retrieved_pairs
+        for citation in citations
+    )
+    citation_numbers = _normalized_numbers(
+        "\n".join(citation["text"] for citation in citations)
+    )
+    unsupported_numbers = sorted(_normalized_numbers(answer) - citation_numbers)
+    numeric_claims_supported = not unsupported_numbers
+    refusal_supported = (
+        not refused or has_citation or _states_insufficient_evidence(answer)
+    )
+
+    unsupported_claims: list[str] = []
+    warnings: list[str] = []
+    if not refused and not has_citation:
+        unsupported_claims.append("Non-refused answer has no citation")
+        warnings.append("Answer has no citation")
+    if not citations_from_retrieved:
+        unsupported_claims.append("Citation is not present in retrieved evidence")
+        warnings.append("Citation provenance check failed")
+    if unsupported_numbers:
+        unsupported_claims.extend(
+            f"Unsupported numeric/date/time claim: {value}"
+            for value in unsupported_numbers
+        )
+        warnings.append("Numeric/date/time claims are not fully supported by citations")
+    if not refusal_supported:
+        unsupported_claims.append(
+            "Refusal has neither relevant evidence nor an insufficient-evidence statement"
+        )
+        warnings.append("Refusal basis is unclear")
+
+    required_checks = (
+        citations_from_retrieved,
+        numeric_claims_supported,
+        refusal_supported,
+        has_citation or refused,
+    )
+    groundedness: GroundednessResult = {
+        "status": "supported" if all(required_checks) else "unsupported",
+        "checks": {
+            "has_citation": has_citation,
+            "citations_from_retrieved_chunks": citations_from_retrieved,
+            "numeric_claims_supported": numeric_claims_supported,
+            "refusal_supported": refusal_supported,
+        },
+        "unsupported_claims": unsupported_claims,
+    }
+    return groundedness, warnings
+
+
+def _scoped_sentences(question: str, text: str) -> list[str]:
+    qualifier_groups = (
+        (("monthly", "month-to-month", "月付"), ("monthly", "month-to-month", "月付")),
+        (("annual", "yearly", "年度", "年付"), ("annual", "yearly", "年度", "年付")),
+    )
+    sentences = [sentence for sentence in SENTENCE_SPLIT_RE.split(text) if sentence]
+    for question_terms, evidence_terms in qualifier_groups:
+        if _contains_any(question, question_terms):
+            scoped = [
+                sentence
+                for sentence in sentences
+                if _contains_any(sentence, evidence_terms)
+            ]
+            return scoped
+    return sentences
+
+
+def _has_query_scoped_conflict(
+    question: str, retrieved_chunks: list[SearchResult]
+) -> bool:
+    """Flag only clear value mismatches within duplicate policy sections."""
+
+    section_query_terms = {
+        "standard_refund_window": (
+            "refund window",
+            "refund deadline",
+            "monthly",
+            "annual",
+            "退款期限",
+            "月付",
+            "年付",
+            "年度訂閱",
+        ),
+        "refund_processing_time": (
+            "refund process",
+            "approved refund",
+            "退款處理",
+            "核准的退款",
+        ),
+        "billing_cycle": (
+            "billing cycle",
+            "annual billing",
+            "annual discount",
+            "計費週期",
+            "年付方案",
+            "折扣",
+        ),
+        "data_deletion": (
+            "data deletion",
+            "deletion request",
+            "資料刪除",
+            "刪除請求",
+        ),
+    }
+    by_section: dict[str, list[SearchResult]] = {}
+    for chunk in retrieved_chunks:
+        slug = chunk.get("section_slug", "")
+        if slug in section_query_terms and _contains_any(
+            question, section_query_terms[slug]
+        ):
+            by_section.setdefault(slug, []).append(chunk)
+
+    for chunks in by_section.values():
+        if len(chunks) < 2:
+            continue
+        value_sets = []
+        for chunk in chunks:
+            scoped_text = " ".join(_scoped_sentences(question, chunk["text"]))
+            values = frozenset(_normalized_numbers(scoped_text))
+            if values:
+                value_sets.append(values)
+        if len(value_sets) >= 2 and len(set(value_sets)) > 1:
+            return True
+    return False
+
+
+def answer_from_retrieved(
+    question: str,
+    retrieved_chunks: list[SearchResult],
+    *,
+    retriever: RetrieverName,
+    latency_ms: float = 0.0,
+) -> AnswerResult:
+    """Build and validate an AnswerResult from an existing retrieval result list."""
+
+    refused = False
+    refusal_reason: str | None = None
+    citation_results: list[SearchResult] = []
+
+    if (
+        not retrieved_chunks
+        or retrieved_chunks[0]["score"] < MIN_RELEVANCE_SCORES[retriever]
+    ):
+        answer = _generic_refusal(question)
+        refused = True
+        refusal_reason = "insufficient_relevance"
+    else:
+        refusal = _refusal_evidence(question, retrieved_chunks)
+        if refusal:
+            refusal_reason, primary = refusal
+            answer = _supported_refusal(question, refusal_reason)
+            citation_results = _related_citations(
+                retrieved_chunks, primary, refusal_reason
+            )
+            refused = True
+        else:
+            top = retrieved_chunks[0]
+            answer = top["text"]
+            citation_results = [top]
+
+    citations = [_citation(result) for result in citation_results]
+    groundedness, warnings = check_groundedness(
+        answer,
+        refused=refused,
+        citations=citations,
+        retrieved_chunks=retrieved_chunks,
+    )
+    requires_human_review = refused or groundedness["status"] != "supported"
+    if groundedness["status"] != "supported":
+        confidence: Confidence = "low"
+    elif refused:
+        confidence = "medium" if citations else "low"
+    else:
+        confidence = "high"
+
+    if _has_query_scoped_conflict(question, retrieved_chunks):
+        requires_human_review = True
+        warnings.append("Potential conflicting evidence detected")
+
+    return AnswerResult(
+        question=question,
+        retriever=retriever,
+        answer=answer,
+        refused=refused,
+        refusal_reason=refusal_reason,
+        requires_human_review=requires_human_review,
+        confidence=confidence,
+        citations=citations,
+        retrieved_chunks=retrieved_chunks,
+        groundedness=groundedness,
+        warnings=warnings,
+        latency_ms=round(latency_ms, 3),
+    )
+
+
 def answer_question(
     question: str,
     *,
@@ -165,7 +470,8 @@ def answer_question(
     retriever: RetrieverName = "lexical",
     model_name: str = DEFAULT_DENSE_MODEL,
     cache_dir: Path = DEFAULT_EMBEDDING_CACHE_DIR,
-) -> Answer:
+) -> AnswerResult:
+    started = perf_counter()
     results = retrieve(
         question,
         top_k=top_k,
@@ -174,34 +480,40 @@ def answer_question(
         model_name=model_name,
         cache_dir=cache_dir,
     )
-    if not results or results[0]["score"] < MIN_RELEVANCE_SCORES[retriever]:
-        return Answer(_generic_refusal(question), [], True)
-
-    top = results[0]
-    refusal = _refusal_evidence(question, results)
-    if refusal:
-        reason, primary = refusal
-        return Answer(
-            _supported_refusal(question, reason),
-            _related_citations(results, primary, reason),
-            True,
-        )
-
-    return Answer(top["text"], [top], False)
+    result = answer_from_retrieved(
+        question,
+        results,
+        retriever=retriever,
+    )
+    return replace(result, latency_ms=round((perf_counter() - started) * 1000, 3))
 
 
-def format_answer(answer: Answer) -> str:
-    lines = ["Answer draft:", answer.text, "", "Citations:"]
-    if not answer.citations:
+def format_answer(result: AnswerResult) -> str:
+    lines = [
+        "Answer draft:",
+        result.answer,
+        "",
+        f"Retriever: {result.retriever}",
+        f"Refused: {'yes' if result.refused else 'no'}",
+        f"Confidence: {result.confidence}",
+        f"Requires human review: {'yes' if result.requires_human_review else 'no'}",
+        f"Groundedness: {result.groundedness['status']}",
+        "",
+        "Citations:",
+    ]
+    if not result.citations:
         lines.append("- None")
     else:
-        for citation in answer.citations:
+        for citation in result.citations:
             section = citation.get("section_zh") or citation["section"]
             slug = citation.get("section_slug")
             section_label = f"{section} ({slug})" if slug else section
             lines.append(
                 f"- {citation['doc']} / {section_label} / {citation['chunk_id']}"
             )
+    if result.warnings:
+        lines.extend(("", "Warnings:"))
+        lines.extend(f"- {warning}" for warning in result.warnings)
     return "\n".join(lines)
 
 
@@ -215,20 +527,23 @@ def main() -> None:
     parser.add_argument(
         "--embedding-cache", type=Path, default=DEFAULT_EMBEDDING_CACHE_DIR
     )
+    parser.add_argument(
+        "--json", action="store_true", help="Print the full AnswerResult as JSON"
+    )
     args = parser.parse_args()
 
-    print(
-        format_answer(
-            answer_question(
-                args.question,
-                top_k=args.top_k,
-                index_path=args.index,
-                retriever=args.retriever,
-                model_name=args.model,
-                cache_dir=args.embedding_cache,
-            )
-        )
+    result = answer_question(
+        args.question,
+        top_k=args.top_k,
+        index_path=args.index,
+        retriever=args.retriever,
+        model_name=args.model,
+        cache_dir=args.embedding_cache,
     )
+    if args.json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(format_answer(result))
 
 
 if __name__ == "__main__":
