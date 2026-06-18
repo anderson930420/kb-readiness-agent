@@ -5,3 +5,9 @@ __pycache__/
 
 
 data/index/*.jsonl
+
+# Generated runtime artifacts
+data/index/*
+!data/index/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
