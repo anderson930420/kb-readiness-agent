@@ -8,10 +8,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ingest import DEFAULT_INDEX_PATH
-from .retrieve import SearchResult, retrieve
+from .retrieve import (
+    DEFAULT_DENSE_MODEL,
+    DEFAULT_EMBEDDING_CACHE_DIR,
+    RETRIEVAL_METHODS,
+    RetrieverName,
+    SearchResult,
+    retrieve,
+)
 
 
-MIN_RELEVANCE_SCORE = 1.0
+MIN_RELEVANCE_SCORES: dict[RetrieverName, float] = {
+    "lexical": 1.0,
+    "dense": 0.2,
+    "hybrid": 0.2,
+}
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 
 
@@ -59,24 +70,70 @@ def _contains_any(text: str, phrases: tuple[str, ...]) -> bool:
     return any(phrase.lower() in lowered for phrase in phrases)
 
 
-def _refusal_reason(question: str, top: SearchResult) -> str | None:
+def _result_with_slug(
+    results: list[SearchResult], slugs: set[str]
+) -> SearchResult | None:
+    return next(
+        (result for result in results if result.get("section_slug") in slugs), None
+    )
+
+
+def _refusal_evidence(
+    question: str, results: list[SearchResult]
+) -> tuple[str, SearchResult] | None:
+    top = results[0]
     slug = top.get("section_slug", "")
 
     if slug == "unsupported_exceptions":
-        return "refund_exception"
+        return "refund_exception", top
     if slug == "unsupported_privacy_questions":
-        return "privacy"
+        return "privacy", top
+
+    refund_exception = _contains_any(question, ("refund", "退款")) and _contains_any(
+        question,
+        (
+            "medical",
+            "emergency",
+            "hardship",
+            "90 days",
+            "醫療",
+            "緊急",
+            "困難",
+            "90 天",
+        ),
+    )
+    if refund_exception:
+        evidence = _result_with_slug(results, {"unsupported_exceptions"})
+        if evidence:
+            return "refund_exception", evidence
+
+    regional_privacy = _contains_any(
+        question, ("gdpr", "ccpa", "article 17", "privacy law", "隱私法規", "法律意見")
+    )
+    if regional_privacy:
+        evidence = _result_with_slug(results, {"unsupported_privacy_questions"})
+        if evidence:
+            return "privacy", evidence
 
     exact_sla = _contains_any(question, ("exact", "uptime", "精確", "可用率"))
-    if exact_sla and slug in {"enterprise_support_response_time", "sla_escalation"}:
-        return "sla"
+    if exact_sla:
+        evidence = _result_with_slug(
+            results, {"enterprise_support_response_time", "sla_escalation"}
+        )
+        if evidence:
+            return "sla", evidence
 
     exact_price = _contains_any(
         question,
         ("how much", "price in", "monthly price", "exact price", "價格是多少", "多少台幣", "精確價格"),
     )
-    if exact_price and slug in {"enterprise_pricing", "enterprise_pricing_quote", "sales_escalation"}:
-        return "pricing"
+    if exact_price:
+        evidence = _result_with_slug(
+            results,
+            {"enterprise_pricing", "enterprise_pricing_quote", "sales_escalation"},
+        )
+        if evidence:
+            return "pricing", evidence
 
     return None
 
@@ -105,17 +162,28 @@ def answer_question(
     *,
     top_k: int = 5,
     index_path: Path = DEFAULT_INDEX_PATH,
+    retriever: RetrieverName = "lexical",
+    model_name: str = DEFAULT_DENSE_MODEL,
+    cache_dir: Path = DEFAULT_EMBEDDING_CACHE_DIR,
 ) -> Answer:
-    results = retrieve(question, top_k=top_k, index_path=index_path)
-    if not results or results[0]["score"] < MIN_RELEVANCE_SCORE:
+    results = retrieve(
+        question,
+        top_k=top_k,
+        index_path=index_path,
+        retriever=retriever,
+        model_name=model_name,
+        cache_dir=cache_dir,
+    )
+    if not results or results[0]["score"] < MIN_RELEVANCE_SCORES[retriever]:
         return Answer(_generic_refusal(question), [], True)
 
     top = results[0]
-    reason = _refusal_reason(question, top)
-    if reason:
+    refusal = _refusal_evidence(question, results)
+    if refusal:
+        reason, primary = refusal
         return Answer(
             _supported_refusal(question, reason),
-            _related_citations(results, top, reason),
+            _related_citations(results, primary, reason),
             True,
         )
 
@@ -142,11 +210,23 @@ def main() -> None:
     parser.add_argument("question")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--index", type=Path, default=DEFAULT_INDEX_PATH)
+    parser.add_argument("--retriever", choices=RETRIEVAL_METHODS, default="lexical")
+    parser.add_argument("--model", default=DEFAULT_DENSE_MODEL)
+    parser.add_argument(
+        "--embedding-cache", type=Path, default=DEFAULT_EMBEDDING_CACHE_DIR
+    )
     args = parser.parse_args()
 
     print(
         format_answer(
-            answer_question(args.question, top_k=args.top_k, index_path=args.index)
+            answer_question(
+                args.question,
+                top_k=args.top_k,
+                index_path=args.index,
+                retriever=args.retriever,
+                model_name=args.model,
+                cache_dir=args.embedding_cache,
+            )
         )
     )
 
