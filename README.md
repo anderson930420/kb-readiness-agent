@@ -1,9 +1,11 @@
-# AI Support KB Readiness Agent — Day 3
+# AI Support KB Readiness Agent — Day 4
 
 This repository contains a bilingual Ask Mode vertical slice: a Chinese-primary
 support corpus, lexical and multilingual dense retrieval, deterministic hybrid
 fusion, structured extractive answers, citations, evidence-based refusal, and
-deterministic groundedness checks.
+deterministic groundedness checks. The bilingual eval gate can also produce a
+machine-readable metrics file and a human-readable Knowledge Base Readiness
+Report.
 
 ## Run it
 
@@ -55,6 +57,26 @@ python -m eval.run_eval --retriever hybrid
 The gate reports retrieval hits, refusal correctness, citation coverage,
 groundedness, and per-case failures. It excludes the five P2 conflict/change
 cases. Pass `--retrievers lexical,dense,hybrid` for comparative diagnostics.
+
+## Knowledge Base Readiness Report
+
+Run the official hybrid gate and write both Day 4 report artifacts:
+
+```bash
+python -m eval.run_eval --retriever hybrid --write-report
+```
+
+This writes:
+
+- `data/reports/metrics.json`: stable metrics, scope counts, gate status,
+  failure details, and deterministic knowledge gaps.
+- `data/reports/readiness_report.md`: executive summary, metrics table,
+  launch recommendation, gaps, failures, limitations, and next steps.
+
+Generated reports are gitignored. Report generation accepts exactly one
+retriever because each artifact represents one readiness gate run. The current
+small synthetic corpus can be recommended for an internal pilot when every
+core metric passes, but it is not classified as externally ready.
 
 ## Regression tests
 

@@ -11,3 +11,4 @@ data/index/*
 !data/index/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
+data/reports/

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 from collections import defaultdict
 from pathlib import Path
 from time import perf_counter
 
 from src.answer import answer_from_retrieved
+from src.audit import (
+    DEFAULT_REPORT_DIR,
+    build_case_evaluation,
+    build_metrics,
+    load_eval_cases,
+    split_eval_cases,
+    write_reports,
+)
 from src.ingest import DEFAULT_INDEX_PATH, PROJECT_ROOT
 from src.retrieve import (
     DEFAULT_DENSE_MODEL,
@@ -22,14 +29,6 @@ from src.retrieve import (
 
 
 DEFAULT_EVAL_PATH = PROJECT_ROOT / "eval" / "eval_set.jsonl"
-
-
-def _load_eval(path: Path) -> list[dict]:
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
 
 
 def _ratio(values: list[bool]) -> str:
@@ -55,20 +54,25 @@ def main() -> None:
         help="Comma-separated subset of lexical,dense,hybrid (default: hybrid)",
     )
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--write-report",
+        action="store_true",
+        help="Write data/reports/metrics.json and readiness_report.md",
+    )
+    parser.add_argument(
+        "--report-dir", type=Path, default=DEFAULT_REPORT_DIR, help=argparse.SUPPRESS
+    )
     args = parser.parse_args()
 
     selected = [name.strip() for name in args.retrievers.split(",") if name.strip()]
     invalid = sorted(set(selected) - set(RETRIEVAL_METHODS))
     if invalid:
         parser.error(f"unknown retriever(s): {', '.join(invalid)}")
+    if args.write_report and len(selected) != 1:
+        parser.error("--write-report requires exactly one retriever")
 
-    all_rows = _load_eval(args.eval_set)
-    excluded_rows = [
-        row for row in all_rows if row.get("evaluation_scope") == "p2_change_impact"
-    ]
-    active_rows = [
-        row for row in all_rows if row.get("evaluation_scope") != "p2_change_impact"
-    ]
+    all_rows = load_eval_cases(args.eval_set)
+    active_rows, excluded_rows = split_eval_cases(all_rows)
     rows = active_rows[: args.limit] if args.limit is not None else active_rows
 
     print(f"Total eval cases: {len(all_rows)}")
@@ -97,6 +101,7 @@ def main() -> None:
     )
     totals: dict[tuple[str, str, str], list[bool]] = defaultdict(list)
     failures: list[dict] = []
+    report_records: list[dict] = []
 
     print(
         f"\nmethod\tlang\tid\tsource_hit@{args.top_k}\tsection_hit@{args.top_k}\t"
@@ -104,8 +109,13 @@ def main() -> None:
         "top1_section\texpected_doc\texpected_section"
     )
     for row in rows:
-        expected_docs = set(row.get("source_docs", [row["source_doc"]]))
-        for language, question in (("zh", row["question"]), ("en", row["question_en"])):
+        questions = (
+            (language, row.get(field))
+            for language, field in (("zh", "question"), ("en", "question_en"))
+        )
+        for language, question in questions:
+            if not question:
+                continue
             for method in selected:
                 started = perf_counter()
                 results = backends[method].search(question, top_k=args.top_k)
@@ -116,18 +126,16 @@ def main() -> None:
                     retriever=method,
                     latency_ms=latency_ms,
                 )
-                checks = {
-                    "source_hit": any(
-                        result["doc"] in expected_docs for result in results
-                    ),
-                    "section_hit": any(
-                        result["section_slug"] == row["source_section"]
-                        for result in results
-                    ),
-                    "correct_refusal": answer.refused == (not row["answerable"]),
-                    "citation_coverage": bool(answer.citations),
-                    "groundedness_pass": answer.groundedness["status"] == "supported",
-                }
+                case_evaluation = build_case_evaluation(
+                    row,
+                    language=language,
+                    question=question,
+                    retrieved=results,
+                    answer=answer,
+                )
+                checks = case_evaluation["checks"]
+                if args.write_report:
+                    report_records.append(case_evaluation)
                 for metric in metric_names:
                     totals[(method, language, metric)].append(checks[metric])
 
@@ -191,9 +199,24 @@ def main() -> None:
             )
     else:
         print("- None")
-    print(f"\nGate: {'FAIL' if failures else 'PASS'}")
 
-    if failures:
+    gate_failed = bool(failures)
+    if args.write_report:
+        metrics = build_metrics(
+            retriever=selected[0],
+            top_k=args.top_k,
+            all_cases=all_rows,
+            records=report_records,
+        )
+        metrics_path, report_path = write_reports(metrics, args.report_dir)
+        gate_failed = metrics["gate"]["status"] == "FAIL"
+        print(f"\nMetrics JSON: {metrics_path}")
+        print(f"Readiness report: {report_path}")
+        print(f"Launch recommendation: {metrics['gate']['recommendation']}")
+
+    print(f"\nGate: {'FAIL' if gate_failed else 'PASS'}")
+
+    if gate_failed:
         raise SystemExit(1)
 
 
