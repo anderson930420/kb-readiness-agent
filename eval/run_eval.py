@@ -41,6 +41,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--retrievers",
+        "--retriever",
+        dest="retrievers",
         default=",".join(RETRIEVAL_METHODS),
         help="Comma-separated subset of lexical,dense,hybrid",
     )
@@ -74,8 +76,8 @@ def main() -> None:
     doc_totals: dict[tuple[str, str], list[bool]] = defaultdict(list)
     section_totals: dict[tuple[str, str], list[bool]] = defaultdict(list)
     print(
-        "method\tlang\tid\tdoc_hit\tsection_hit\tscore\t"
-        "top_doc\ttop_section\texpected_doc\texpected_section"
+        f"method\tlang\tid\tsource_hit@{args.top_k}\tsection_hit@{args.top_k}\t"
+        "top1_score\ttop1_doc\ttop1_section\texpected_doc\texpected_section"
     )
     for row in rows:
         expected_docs = set(row.get("source_docs", [row["source_doc"]]))
