@@ -1,0 +1,9 @@
+filename,title_zh,title_en,source,type,topic_zh,topic_en,language,notes_zh,notes_en
+pricing_policy.md,定價政策,Pricing Policy,synthetic,policy,定價,pricing,zh-TW,"方案類型、計費週期、超額使用、付款失敗、Enterprise 定價","Plans, billing cycle, overages, payment failure, enterprise pricing"
+refund_policy.md,退款政策,Refund Policy,synthetic,policy,退款,refund,zh-TW,"退款期限、續約付款、數位服務、Enterprise 退款審查、退款處理時間","Refund window, renewal payments, digital services, enterprise refund review, processing time"
+privacy_policy.md,隱私權政策,Privacy Policy,synthetic,policy,隱私,privacy,zh-TW,"資料蒐集、資料刪除、資料匯出、Enterprise 資料請求、敏感資料","Data collection, data deletion, data export, enterprise data requests, sensitive data"
+enterprise_plan_faq.md,Enterprise 方案常見問題,Enterprise Plan FAQ,synthetic,faq,Enterprise,enterprise,zh-TW,"Enterprise 方案內容、自動退款、支援回覆時間、客製資料保存、方案報價","Enterprise inclusions, automatic refunds, support response time, custom retention, pricing quote"
+onboarding_guide.md,導入指南,Onboarding Guide,synthetic,guide,導入,onboarding,zh-TW,"標準導入、Enterprise 導入、資料移轉、導入費用、導入期間支援","Standard onboarding, enterprise onboarding, migration services, onboarding fees, support during onboarding"
+support_escalation_sop.md,客服升級處理 SOP,Support Escalation SOP,synthetic,sop,升級處理,escalation,zh-TW,"一般原則、退款升級、隱私升級、SLA 升級、業務升級、低信心與證據衝突處理","General rule, refund escalation, privacy escalation, SLA escalation, sales escalation, low confidence and evidence conflict handling"
+compare_docs/old_refund_policy.md,舊版退款政策,Old Refund Policy,synthetic,policy_change,舊版退款,old refund policy,zh-TW,"舊版退款期限、續約退款、Enterprise 自動退款、服務費用退款、處理時間","Old refund windows, renewal refunds, enterprise automatic refunds, service fee refunds, processing time"
+compare_docs/new_refund_policy.md,新版退款政策,New Refund Policy,synthetic,policy_change,新版退款,new refund policy,zh-TW,"新版退款期限、續約付款不退款、Enterprise 人工審查、服務費用不退款、退款例外未定義","New refund windows, non-refundable renewals, enterprise manual review, non-refundable services, unsupported exceptions"
