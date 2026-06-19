@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -26,8 +27,31 @@ def _ratio(metric: dict[str, int]) -> str:
 
 
 def _render_answer(result: AnswerResult) -> None:
+    st.subheader("Validator verdict")
+    if result.answer_mode == "extractive":
+        st.info("Not run — extractive answer mode")
+    elif result.validator_decision == "allowed":
+        st.success("✓ Generated answer supported and safe")
+        if result.requires_human_review:
+            st.warning("Requires human review")
+    elif result.validator_decision == "blocked":
+        st.error("⚠ Generated proposal blocked by validator")
+        st.warning("Requires human review")
+    else:
+        st.warning(f"Unexpected validator decision: {result.validator_decision}")
+
     st.subheader("Answer")
     st.write(result.answer)
+
+    if result.blocked_generated_answer is not None:
+        st.error(
+            "**Blocked generated answer — not shown to end users**\n\n"
+            f"{result.blocked_generated_answer}"
+        )
+
+    if result.generation_trace is not None:
+        with st.expander("Generation trace"):
+            st.json(result.generation_trace)
 
     status_columns = st.columns(4)
     status_columns[0].metric("Refused", "Yes" if result.refused else "No")
@@ -205,8 +229,8 @@ def _render_change_impact(run: dict) -> None:
 st.set_page_config(page_title="KB Readiness Agent", layout="wide")
 st.title("KB Readiness Agent")
 st.caption(
-    "Local deterministic demo: extractive Ask Mode, readiness evaluation, and "
-    "Markdown policy change impact."
+    "Local deterministic demo: validator-gated Ask Mode, readiness evaluation, "
+    "and Markdown policy change impact."
 )
 
 ask_tab, readiness_tab, change_tab = st.tabs(
@@ -221,8 +245,35 @@ with ask_tab:
     retriever = st.selectbox(
         "Retriever", ("lexical", "dense", "hybrid"), index=2
     )
+    answer_mode = st.selectbox(
+        "Answer mode", ("extractive", "generative"), index=0
+    )
+    llm_provider = None
+    minimax_key_missing = False
+    if answer_mode == "generative":
+        llm_provider = st.selectbox(
+            "LLM provider", ("fake_hallucination", "minimax"), index=0
+        )
+        st.caption(
+            "`fake_hallucination` is the no-key reproducible validator demo.  \n"
+            "`minimax` requires `MINIMAX_API_KEY`."
+        )
+        minimax_key_missing = (
+            llm_provider == "minimax"
+            and not os.environ.get("MINIMAX_API_KEY", "").strip()
+        )
+        if minimax_key_missing:
+            st.warning(
+                "MiniMax requires `MINIMAX_API_KEY`. Set it in the Streamlit "
+                "environment or select `fake_hallucination`; no request was made."
+            )
     ask_column, clear_column = st.columns([1, 1])
-    ask_clicked = ask_column.button("Ask", type="primary", key="ask_button")
+    ask_clicked = ask_column.button(
+        "Ask",
+        type="primary",
+        key="ask_button",
+        disabled=minimax_key_missing,
+    )
     clear_clicked = clear_column.button("Clear session", key="clear_session_button")
     if clear_clicked:
         st.session_state.pop("answer_session", None)
@@ -237,8 +288,17 @@ with ask_tab:
             try:
                 with st.spinner("Retrieving evidence and checking groundedness..."):
                     session = st.session_state.get("answer_session")
-                    if session is None or session.retriever != retriever:
-                        session = AnswerSession(retriever=retriever)
+                    if (
+                        session is None
+                        or session.retriever != retriever
+                        or session.mode != answer_mode
+                        or session.llm_provider != llm_provider
+                    ):
+                        session = AnswerSession(
+                            retriever=retriever,
+                            mode=answer_mode,
+                            llm_provider=llm_provider,
+                        )
                         st.session_state["answer_session"] = session
                     turn = session.ask(question.strip())
                     st.session_state["answer_result"] = turn.answer
