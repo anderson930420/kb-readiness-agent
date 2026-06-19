@@ -10,6 +10,13 @@ from pathlib import Path
 from time import perf_counter
 from typing import Literal, TypedDict
 
+from .generation import (
+    LLM_PROVIDERS,
+    GeneratedAnswer,
+    LLMProvider,
+    generate_answer,
+)
+
 from .ingest import DEFAULT_INDEX_PATH
 from .retrieve import (
     DEFAULT_DENSE_MODEL,
@@ -34,6 +41,8 @@ NUMBER_RE = re.compile(
 )
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s*")
 Confidence = Literal["high", "medium", "low"]
+AnswerMode = Literal["extractive", "generative"]
+ValidatorDecision = Literal["not_run", "allowed", "blocked"]
 
 
 class Citation(TypedDict):
@@ -73,6 +82,10 @@ class AnswerResult:
     groundedness: GroundednessResult
     warnings: list[str]
     latency_ms: float
+    answer_mode: AnswerMode = "extractive"
+    validator_decision: ValidatorDecision = "not_run"
+    generation_trace: dict[str, object] | None = None
+    blocked_generated_answer: str | None = None
 
     @property
     def text(self) -> str:
@@ -470,6 +483,9 @@ def answer_question(
     retriever: RetrieverName = "lexical",
     model_name: str = DEFAULT_DENSE_MODEL,
     cache_dir: Path = DEFAULT_EMBEDDING_CACHE_DIR,
+    mode: AnswerMode = "extractive",
+    llm_provider: LLMProvider | None = None,
+    llm_model: str | None = None,
 ) -> AnswerResult:
     started = perf_counter()
     results = retrieve(
@@ -485,7 +501,153 @@ def answer_question(
         results,
         retriever=retriever,
     )
+    if mode == "generative":
+        if llm_provider is None:
+            raise ValueError("llm_provider is required when mode='generative'")
+        result = _generate_and_validate(
+            question,
+            result,
+            provider=llm_provider,
+            model=llm_model,
+        )
     return replace(result, latency_ms=round((perf_counter() - started) * 1000, 3))
+
+
+def _generated_citations(
+    generated: GeneratedAnswer, retrieved_chunks: list[SearchResult]
+) -> list[Citation]:
+    """Create citations by resolving IDs against retrieval, never model metadata."""
+
+    by_id = {chunk["chunk_id"]: chunk for chunk in retrieved_chunks}
+    return [
+        _citation(by_id[chunk_id])
+        for chunk_id in dict.fromkeys(generated.used_chunk_ids)
+        if chunk_id in by_id
+    ]
+
+
+def _validate_generation(
+    generated: GeneratedAnswer,
+    *,
+    baseline: AnswerResult,
+) -> tuple[list[Citation], GroundednessResult, list[str], list[str]]:
+    retrieved_ids = {chunk["chunk_id"] for chunk in baseline.retrieved_chunks}
+    used_ids = set(generated.used_chunk_ids)
+    errors: list[str] = []
+
+    invalid_used_ids = sorted(used_ids - retrieved_ids)
+    if invalid_used_ids:
+        errors.append(
+            "Generated used_chunk_ids are not retrieved chunks: "
+            + ", ".join(invalid_used_ids)
+        )
+
+    for index, claim in enumerate(generated.claims, start=1):
+        claim_ids = set(claim["chunk_ids"])
+        if not claim_ids:
+            errors.append(f"Generated claim {index} has no chunk citation")
+        invalid_claim_ids = sorted(claim_ids - retrieved_ids)
+        if invalid_claim_ids:
+            errors.append(
+                f"Generated claim {index} cites non-retrieved chunks: "
+                + ", ".join(invalid_claim_ids)
+            )
+        undeclared_claim_ids = sorted(claim_ids - used_ids)
+        if undeclared_claim_ids:
+            errors.append(
+                f"Generated claim {index} cites chunks absent from used_chunk_ids: "
+                + ", ".join(undeclared_claim_ids)
+            )
+
+    if not generated.refused and not generated.claims:
+        errors.append("Non-refused generated answer has no claims")
+    if baseline.refused and not generated.refused:
+        errors.append("Generated answer attempted to override an extractive refusal")
+
+    citations = _generated_citations(generated, baseline.retrieved_chunks)
+    groundedness, groundedness_warnings = check_groundedness(
+        generated.answer,
+        refused=generated.refused,
+        citations=citations,
+        retrieved_chunks=baseline.retrieved_chunks,
+    )
+    if groundedness["status"] != "supported":
+        errors.extend(groundedness["unsupported_claims"])
+    return citations, groundedness, groundedness_warnings, errors
+
+
+def _generate_and_validate(
+    question: str,
+    baseline: AnswerResult,
+    *,
+    provider: LLMProvider,
+    model: str | None,
+) -> AnswerResult:
+    generated, resolved_model, prompt = generate_answer(
+        question,
+        baseline.retrieved_chunks,
+        provider=provider,
+        model=model,
+    )
+    citations, generated_groundedness, generated_warnings, errors = (
+        _validate_generation(generated, baseline=baseline)
+    )
+    trace: dict[str, object] = {
+        "provider": provider,
+        "model": resolved_model,
+        "prompt_chunk_ids": [
+            chunk["chunk_id"] for chunk in baseline.retrieved_chunks
+        ],
+        "prompt_length": len(prompt),
+        "used_chunk_ids": generated.used_chunk_ids,
+        "claims": generated.claims,
+        "generated_groundedness": generated_groundedness,
+        "validation_errors": errors,
+    }
+
+    if errors:
+        warnings = list(baseline.warnings)
+        warnings.extend(
+            warning for warning in generated_warnings if warning not in warnings
+        )
+        warnings.extend(f"Generation blocked: {error}" for error in errors)
+        return replace(
+            baseline,
+            requires_human_review=True,
+            confidence="low",
+            warnings=warnings,
+            answer_mode="generative",
+            validator_decision="blocked",
+            generation_trace=trace,
+            blocked_generated_answer=generated.answer,
+        )
+
+    requires_human_review = (
+        generated.requires_human_review
+        or generated.refused
+        or baseline.requires_human_review
+    )
+    if generated.refused:
+        confidence: Confidence = "medium" if citations else "low"
+    else:
+        confidence = "high"
+    warnings = list(baseline.warnings)
+    warnings.extend(warning for warning in generated_warnings if warning not in warnings)
+    return replace(
+        baseline,
+        answer=generated.answer,
+        refused=generated.refused,
+        refusal_reason=generated.refusal_reason,
+        requires_human_review=requires_human_review,
+        confidence=confidence,
+        citations=citations,
+        groundedness=generated_groundedness,
+        warnings=warnings,
+        answer_mode="generative",
+        validator_decision="allowed",
+        generation_trace=trace,
+        blocked_generated_answer=None,
+    )
 
 
 def format_answer(result: AnswerResult) -> str:
@@ -493,6 +655,8 @@ def format_answer(result: AnswerResult) -> str:
         "Answer draft:",
         result.answer,
         "",
+        f"Answer mode: {result.answer_mode}",
+        f"Generation validator: {result.validator_decision}",
         f"Retriever: {result.retriever}",
         f"Refused: {'yes' if result.refused else 'no'}",
         f"Confidence: {result.confidence}",
@@ -514,6 +678,14 @@ def format_answer(result: AnswerResult) -> str:
     if result.warnings:
         lines.extend(("", "Warnings:"))
         lines.extend(f"- {warning}" for warning in result.warnings)
+    if result.blocked_generated_answer is not None:
+        lines.extend(
+            (
+                "",
+                "Blocked generated answer (not released):",
+                result.blocked_generated_answer,
+            )
+        )
     return "\n".join(lines)
 
 
@@ -525,12 +697,20 @@ def main() -> None:
     parser.add_argument("--retriever", choices=RETRIEVAL_METHODS, default="lexical")
     parser.add_argument("--model", default=DEFAULT_DENSE_MODEL)
     parser.add_argument(
+        "--mode", choices=("extractive", "generative"), default="extractive"
+    )
+    parser.add_argument("--llm-provider", choices=LLM_PROVIDERS)
+    parser.add_argument("--llm-model")
+    parser.add_argument(
         "--embedding-cache", type=Path, default=DEFAULT_EMBEDDING_CACHE_DIR
     )
     parser.add_argument(
         "--json", action="store_true", help="Print the full AnswerResult as JSON"
     )
     args = parser.parse_args()
+
+    if args.mode == "generative" and args.llm_provider is None:
+        parser.error("--llm-provider is required when --mode generative")
 
     result = answer_question(
         args.question,
@@ -539,6 +719,9 @@ def main() -> None:
         retriever=args.retriever,
         model_name=args.model,
         cache_dir=args.embedding_cache,
+        mode=args.mode,
+        llm_provider=args.llm_provider,
+        llm_model=args.llm_model,
     )
     if args.json:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))

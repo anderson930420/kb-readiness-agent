@@ -46,8 +46,16 @@ class Day3ReliabilityTests(unittest.TestCase):
                 "groundedness",
                 "warnings",
                 "latency_ms",
+                "answer_mode",
+                "validator_decision",
+                "generation_trace",
+                "blocked_generated_answer",
             },
         )
+        self.assertEqual(result.answer_mode, "extractive")
+        self.assertEqual(result.validator_decision, "not_run")
+        self.assertIsNone(result.generation_trace)
+        self.assertIsNone(result.blocked_generated_answer)
         self.assertFalse(result.refused)
         self.assertEqual(result.confidence, "high")
         self.assertEqual(result.groundedness["status"], "supported")

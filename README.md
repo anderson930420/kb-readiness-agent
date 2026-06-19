@@ -14,8 +14,9 @@ not a production-ready support or legal-analysis system.
 
 The demo has three modes:
 
-- **Ask Mode:** bilingual extractive answers, chunk-level citations, and conservative
-  refusal/manual-review behavior.
+- **Ask Mode:** bilingual extractive answers by default, optional validated
+  generative answers, chunk-level citations, and conservative refusal/manual-review
+  behavior.
 - **Readiness Audit:** eval metrics, gate status, knowledge gaps, and an
   `Internal Pilot Ready` or remediation recommendation.
 - **Change Impact:** deterministic old/new policy comparison with changed sections,
@@ -23,12 +24,13 @@ The demo has three modes:
 
 ## Quickstart
 
-Python 3.10 or newer is required. No API key or `.env` file is needed.
+Python 3.10 or newer is required. The default extractive mode needs no API key or
+`.env` file.
 
 ```bash
 python -m pip install -r requirements.txt
 python -m src.ingest
-python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid
+python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
 python -m eval.run_eval --retriever hybrid --write-report
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
 ```
@@ -77,8 +79,30 @@ path with multilingual dense retrieval using fixed score fusion.
 
 `AnswerResult` includes the question, retriever, answer or refusal, citations,
 confidence, human-review state, groundedness status, warnings, retrieved chunks,
-and latency. Answers are extracts from the highest-ranked evidence chunk; the
-project does not use an LLM to generate answers.
+latency, answer mode, validator decision, and an optional generation trace. Existing
+fields remain present. Extractive mode returns the highest-ranked evidence chunk or
+a deterministic refusal exactly as before.
+
+Generation is opt-in and always runs behind the deterministic validator. Fake
+providers make the path reproducible without credentials:
+
+```bash
+python -m src.answer "標準月付用戶的退款期限是多久？" \
+  --retriever hybrid --mode generative --llm-provider fake_supported
+python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" \
+  --retriever hybrid --mode generative --llm-provider fake_hallucination
+```
+
+The second command intentionally produces an unsupported numeric claim. The
+validator blocks it, keeps the safe extractive refusal as the final answer, marks
+the result for human review, and records the rejected text in
+`blocked_generated_answer`.
+
+Real providers are optional. Export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, then
+select `--llm-provider openai|anthropic`; use `--llm-model` to override the provider
+default. Context sent to a real provider consists of the question, generation
+contract, and retrieved chunks. Copy `.env.example` only as a configuration
+reference; this project does not automatically load `.env` files.
 
 ## Demo
 
@@ -96,6 +120,8 @@ walkthrough, see [DEMO.md](DEMO.md).
 ```bash
 python -m src.ingest
 python -m unittest discover -s tests
+python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
+python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
 python -m eval.run_eval --retriever hybrid --write-report
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
 ./scripts/demo.sh
@@ -116,8 +142,9 @@ Expected baseline:
 
 - The corpus contains six synthetic Markdown documents and the eval set is small
   and curated; results are not statistically representative of production traffic.
-- Answers are top-chunk extracts or deterministic refusals, not LLM-generated
-  responses.
+- Extractive answers are top-chunk extracts or deterministic refusals. Optional
+  generation is context-only and validated, but the deterministic checks are not a
+  complete semantic-entailment judge.
 - Groundedness checks citation provenance and coverage, numeric claims, and refusal
   support; it is not semantic answer correctness or an LLM judge.
 - Citations are chunk-level. Markdown sources have no page numbers.

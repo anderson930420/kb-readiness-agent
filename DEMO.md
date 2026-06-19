@@ -23,17 +23,18 @@ python -m pip install -r requirements-ui.txt
 streamlit run app.py
 ```
 
-The UI presents the same Ask, Readiness Audit, and Change Impact workflows as the
-CLI.
+The UI presents the extractive Ask, Readiness Audit, and Change Impact workflows.
+Optional generative mode is currently exposed through the CLI.
 
 ## 1. Ask Mode
 
 Run these questions in order:
 
 ```bash
-python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid
+python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
 python -m src.answer "客戶是否應該把醫療紀錄上傳到客服工單？" --retriever hybrid
 python -m src.answer "Can customers get a refund after 90 days for medical reasons?" --retriever hybrid
+python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
 ```
 
 Expected observations:
@@ -44,10 +45,16 @@ Expected observations:
    with source evidence.
 3. The unsupported 90-day medical exception is not invented. The result refuses
    or routes the request to manual review using policy evidence.
+4. The fake generative backend intentionally claims that a 90-day medical refund
+   is allowed. The validator blocks that output, preserves the extractive refusal
+   as the final answer, and sets low confidence plus human review.
 
 Point out that each result exposes confidence, citation identity, groundedness,
-warnings, and review state. Add `--json` to any command to inspect the full
-`AnswerResult` contract.
+warnings, review state, answer mode, validator decision, and optional generation
+trace. Add `--json` to any command to inspect the full `AnswerResult` contract.
+Extractive mode remains the default and requires no API key. The two fake providers
+also require no credentials; OpenAI and Anthropic are optional and require their
+respective environment keys.
 
 ## 2. Readiness Audit
 
@@ -85,9 +92,9 @@ The generated outputs are `data/reports/change_impact.json` and
 
 ## Three-minute walkthrough
 
-1. **First minute — Ask Mode:** run the supported refund question and the
-   unsupported medical-exception question. Show that the same pipeline can answer
-   with evidence or refuse conservatively.
+1. **First minute — Ask Mode:** run the supported extractive refund question, the
+   unsupported medical-exception question, and the fake hallucination. Show that
+   the validator does not release the unsupported generated answer.
 2. **Second minute — Readiness Audit:** run the eval gate and open the readiness
    report. Emphasize that reliability is measured across bilingual cases rather
    than inferred from a single good chat response.
@@ -96,14 +103,16 @@ The generated outputs are `data/reports/change_impact.json` and
    KB update work.
 
 The key distinction to state: this is a deterministic RAGOps-lite review workflow
-around a local extractive QA baseline, not a production chatbot or an LLM-based
-legal analyzer.
+around a local extractive QA baseline with optional validated generation, not a
+production chatbot or an LLM-based legal analyzer.
 
 ## Final validation checklist
 
 ```bash
 python -m src.ingest
 python -m unittest discover -s tests
+python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
+python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
 python -m eval.run_eval --retriever hybrid --write-report
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
 ./scripts/demo.sh
