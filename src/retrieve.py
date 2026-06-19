@@ -206,7 +206,18 @@ class DenseRetriever:
                     "Dense retrieval requires sentence-transformers. "
                     "Install dependencies with `python -m pip install -r requirements.txt`."
                 ) from error
-            self._model = SentenceTransformer(self.model_name)
+            try:
+                self._model = SentenceTransformer(self.model_name)
+            except Exception as online_error:
+                # Recent Hugging Face clients may perform metadata requests even
+                # when all model files are cached. Restricted/offline runtimes
+                # should still be able to use that complete local cache.
+                try:
+                    self._model = SentenceTransformer(
+                        self.model_name, local_files_only=True
+                    )
+                except Exception:
+                    raise online_error
         return self._model
 
     def _fingerprint(self) -> str:

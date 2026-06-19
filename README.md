@@ -1,11 +1,12 @@
-# AI Support KB Readiness Agent — Day 4
+# AI Support KB Readiness Agent — Day 5
 
 This repository contains a bilingual Ask Mode vertical slice: a Chinese-primary
 support corpus, lexical and multilingual dense retrieval, deterministic hybrid
 fusion, structured extractive answers, citations, evidence-based refusal, and
 deterministic groundedness checks. The bilingual eval gate can also produce a
 machine-readable metrics file and a human-readable Knowledge Base Readiness
-Report.
+Report. Change Impact Mode compares old/new Markdown policies and identifies
+possibly invalidated eval answers and KB sections with deterministic rules.
 
 ## Run it
 
@@ -28,8 +29,8 @@ python -m src.answer "Can customers get a refund after 90 days for medical reaso
 python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --json
 ```
 
-Default ingestion reads only `corpus/`. Files under `compare_docs/` are reserved
-for a later Change Impact workflow and are not available to Ask Mode.
+Default ingestion reads only `corpus/`. Files under `compare_docs/` are isolated
+inputs for Change Impact Mode and are not available to Ask Mode.
 
 The index is written to `data/index/chunks.jsonl`. Each Markdown chunk preserves
 `chunk_id`, `doc`, `section`, `section_zh`, `section_slug`, `page`, and `text`.
@@ -77,6 +78,26 @@ Generated reports are gitignored. Report generation accepts exactly one
 retriever because each artifact represents one readiness gate run. The current
 small synthetic corpus can be recommended for an internal pilot when every
 core metric passes, but it is not classified as externally ready.
+
+## Change Impact Mode
+
+Compare an old and new policy document:
+
+```bash
+python -m src.compare \
+  --old compare_docs/old_refund_policy.md \
+  --new compare_docs/new_refund_policy.md
+```
+
+This writes `data/reports/change_impact.json` and
+`data/reports/change_impact_report.md`. Add `--json` to print the structured
+result or `--output-dir PATH` to change the report directory.
+
+The comparison is structure-aware and rule-based: it aligns H1/H2 Markdown
+sections by slug, normalized heading, then lexical overlap; detects explicit
+numeric, eligibility, refundability, exception, and manual-review changes; and
+maps them to eval cases and existing corpus sections. It does not use an LLM,
+perform full-corpus conflict scanning, or claim full semantic/legal analysis.
 
 ## Regression tests
 

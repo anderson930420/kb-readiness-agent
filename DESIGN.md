@@ -3,9 +3,9 @@
 > Product direction: a readiness and reliability tool for evaluating whether an
 > enterprise support knowledge base is suitable for an AI assistant.
 
-Day 4 turns the bilingual Ask Mode eval gate into machine-readable metrics and
-a human-readable Knowledge Base Readiness Report. This is a CLI audit artifact,
-not a Streamlit application or Change Impact implementation.
+Day 5 adds deterministic Markdown Change Impact Mode alongside the bilingual
+Ask Mode gate and Knowledge Base Readiness Report. These remain CLI workflows;
+there is no Streamlit application or LLM-based policy analysis.
 
 ---
 
@@ -22,16 +22,16 @@ not a Streamlit application or Change Impact implementation.
 Knowledge Base Readiness workflow，服務 AI 導入顧問、PM、solution engineer、
 客戶成功與 AI 工程團隊。
 
-目前可執行的產品行為仍收斂在 Ask Mode；Day 4 Audit Mode 將其 eval 結果包裝成
-readiness artifacts。Change Impact Mode 尚未實作。
+目前 Ask Mode 提供問答與 eval gate，Audit Mode 將 eval 結果包裝成 readiness
+artifacts，Change Impact Mode 則隔離比較新舊 Markdown policy 並標記可能失效的答案。
 
 ---
 
-## 2. Current implementation status（Day 4）
+## 2. Current implementation status（Day 5）
 
 ### 已實作
 
-| 能力 | Day 3 實作狀態 |
+| 能力 | Day 5 實作狀態 |
 |---|---|
 | Corpus | 中文為主，標題與 retrieval aliases 提供中英雙語線索 |
 | Ingestion | 僅讀取 `corpus/*.md`；`compare_docs/` 不進入 Ask Mode index |
@@ -47,11 +47,12 @@ readiness artifacts。Change Impact Mode 尚未實作。
 | Conflict hook | 僅針對 query-relevant、同 section 的重複 evidence 值差異發出保守 warning；不掃描全 corpus |
 | Eval gate | `eval/run_eval.py` 預設 hybrid，評估 retrieval、refusal、citation coverage、groundedness 與 per-case failures |
 | Readiness report | `--write-report` 產生穩定 JSON metrics 與 Markdown report，包含 scope、gate、launch recommendation、failure detail 與 deterministic knowledge gaps |
-| Tests | Day 1–3 regression、answer reliability 與 Day 4 audit/report tests |
+| Change Impact | H1/H2 section parsing；slug、heading similarity、lexical overlap alignment；rule-based risk detection；eval / KB impact mapping；JSON 與 Markdown report |
+| Tests | Day 1–4 regression、answer reliability、audit/report 與 Day 5 comparison tests |
 
 ### 尚未實作
 
-以下能力不屬於目前 Day 3 完成範圍：
+以下能力不屬於目前 Day 5 完成範圍：
 
 - PDF parsing（PyMuPDF / pdfplumber）
 - Chroma、ElasticSearch 或其他外部 vector/search database
@@ -60,7 +61,7 @@ readiness artifacts。Change Impact Mode 尚未實作。
 - API-based LLM answer generation
 - sentence-level citations
 - Streamlit UI
-- Change Impact Mode 與 full-corpus conflict detection
+- full semantic/legal diff 與 full-corpus conflict detection
 - token / cost observability
 
 ---
@@ -186,11 +187,13 @@ groundedness 與正式 eval gate。Audit Mode 只評估並報告這條 Ask Mode 
 coverage、refusal quality、citation/groundedness、deterministic knowledge gaps、failure
 details 與 launch recommendation。目前只有 CLI artifacts，沒有 Streamlit UI。
 
-### Change Impact Mode — planned Day 5
+### Change Impact Mode — Day 5 active
 
-目標是比較新舊政策、辨識受影響的 section / eval question，並要求高風險變更人工複核。
-`compare_docs/` 目前只保留未來測試文件，預設 ingestion 明確排除它；沒有 diff、衝突判定
-或 impact report 實作。
+`src/compare.py` 隔離載入兩份 Markdown policy，依 H1/H2 結構解析，先以 slug、再以
+normalized heading similarity、最後以 lexical overlap 做 one-to-one alignment。規則會標記
+退款期限、eligibility、manual review、non-refundable scope、例外與 processing time 變更，
+並映射到 eval questions 和現有 corpus sections。輸出為 `change_impact.json` 與
+`change_impact_report.md`。這不是 LLM semantic diff，也不是法律分析或全 corpus 衝突掃描。
 
 ---
 
@@ -205,8 +208,8 @@ details 與 launch recommendation。目前只有 CLI artifacts，沒有 Streamli
 - 5 conflict / change-impact cases
 
 目前 Ask Mode gate 只啟用前 20 cases。五個標記
-`evaluation_scope: p2_change_impact` 的 conflict cases 由 `eval/run_eval.py` 排除，不能把它們
-算成已通過或把 Change Impact 視為已完成。
+`evaluation_scope: p2_change_impact` 的 conflict cases 仍由 `eval/run_eval.py` 排除；Change
+Impact Mode 會把相關 cases 納入可能受影響清單，但不把它們混入 Ask Mode retrieval gate。
 
 每個 active case 會分別執行中文 `question` 與英文 `question_en`。Day 3 gate 同時評估
 retrieval contract 與 deterministic answer checks，不是 LLM semantic judge。
@@ -254,8 +257,9 @@ python -m unittest discover -s tests -v
 目前 tests 涵蓋 34-chunk corpus-only ingestion、Day 1 lexical smoke cases、
 multilingual dense result schema、embedding cache reuse、hybrid determinism、structured
 answer/JSON contract、groundedness、citation provenance、medical refund refusal，以及
-query-scoped conflict warning、metrics schema、P2 scope isolation、readiness recommendation
-與 report rendering。
+query-scoped conflict warning、metrics schema、P2 scope isolation、readiness recommendation、
+report rendering，以及 Markdown parsing/alignment、refund-window risk、eval impact、KB update
+與 Change Impact report generation。
 
 ---
 
@@ -267,12 +271,13 @@ query-scoped conflict warning、metrics schema、P2 scope isolation、readiness 
 - Knowledge gaps 由 unanswerable/refusal metadata、refusal reason、evidence section 與 question 決定。
 - Report artifact 預設 gitignored；不加入 Streamlit、RAGAS 或 API-based generation。
 
-### Planned Day 5 — Change Impact
+### Day 5 Change Impact boundary
 
-- 隔離載入 `compare_docs/`，不污染 Ask Mode index。
-- 實作新舊政策 section alignment 與 impact analysis。
-- 啟用目前排除的五個 P2 conflict / change cases。
-- 對衝突或高風險變更輸出人工複核狀態。
+- `compare_docs/` 只由明確的 compare command 載入，不污染 Ask Mode index。
+- section alignment 與 policy-risk signals 都是 transparent deterministic rules。
+- P2 cases 用於 impact mapping，不代表新的 semantic answer-accuracy gate。
+- 高風險 changes 要求人工複核；報告只指出 possible answer invalidation。
+- 不做 full-corpus scanning、LLM diff 或完整法律衝突判定。
 
 ### Future scale options
 
@@ -323,6 +328,9 @@ python -m eval.run_eval --retriever hybrid --top-k 3
 
 # 產生 data/reports/metrics.json 與 readiness_report.md
 python -m eval.run_eval --retriever hybrid --write-report
+
+# 產生 change_impact.json 與 change_impact_report.md
+python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
 
 # Regression tests
 python -m unittest discover -s tests -v
