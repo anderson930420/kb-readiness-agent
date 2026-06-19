@@ -323,7 +323,7 @@ def render_markdown(metrics: dict) -> str:
         f"- Excluded P2 conflict/change cases: {metrics['excluded_p2_cases']}",
         "- Languages: " + ", ".join(sorted(metrics["languages"])),
         "",
-        "P2 conflict/change cases are reserved for future Change Impact Mode and are not part of this Ask Mode gate.",
+        "P2 conflict/change cases are handled separately by Change Impact Mode and are not part of this Ask Mode gate.",
         "",
         "## Gate status",
         "",
@@ -419,7 +419,7 @@ def render_markdown(metrics: dict) -> str:
             "",
             "- Review and prioritize the deterministic knowledge gaps with policy owners.",
             "- Add representative real-world corpus content and eval cases before external use.",
-            "- Keep P2 conflict/change cases isolated until Change Impact Mode is implemented.",
+            "- Keep P2 conflict/change cases isolated in Change Impact Mode.",
             "- Re-run this gate after corpus, retrieval, or answer-contract changes.",
             "",
         )
