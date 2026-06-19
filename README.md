@@ -19,8 +19,8 @@ The demo has three modes:
   behavior.
 - **Readiness Audit:** eval metrics, gate status, knowledge gaps, and an
   `Internal Pilot Ready` or remediation recommendation.
-- **Change Impact:** deterministic old/new policy comparison with changed sections,
-  risk levels, impacted eval cases, and required KB updates.
+- **Change Impact:** deterministic old/new Markdown or PDF policy comparison with
+  changed sections, risk levels, impacted eval cases, and required KB updates.
 
 ## Quickstart
 
@@ -33,6 +33,8 @@ python -m src.ingest
 python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
 python -m eval.run_eval --retriever hybrid --write-report
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
+python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
+python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --write-report
 ```
 
 The first dense or hybrid run may download
@@ -65,7 +67,8 @@ Corpus Markdown
 → Eval gate
 → Readiness report
 
-Old/New policy docs
+Old/New Markdown or PDF policy docs
+→ Structured document loader
 → Section alignment
 → Rule-based change detection
 → Impacted eval cases / KB updates
@@ -104,6 +107,12 @@ default. Context sent to a real provider consists of the question, generation
 contract, and retrieved chunks. Copy `.env.example` only as a configuration
 reference; this project does not automatically load `.env` files.
 
+Change Impact accepts `.md`, `.markdown`, and text-based `.pdf` files. Markdown
+uses H1/H2 structure. PDF loading uses PyMuPDF layout metadata to remove repeated
+headers/footers, identify visually distinct headings, and preserve each section's
+title, slug, start/end page, and text. Large documents are aligned and compared as
+normalized sections; the complete PDF is never treated as one prompt or context.
+
 ## Demo
 
 Run the complete CLI flow:
@@ -124,6 +133,8 @@ python -m src.answer "標準月付用戶的退款期限是多久？" --retriever
 python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
 python -m eval.run_eval --retriever hybrid --write-report
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
+python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
+python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --write-report
 ./scripts/demo.sh
 ```
 
@@ -147,12 +158,14 @@ Expected baseline:
   complete semantic-entailment judge.
 - Groundedness checks citation provenance and coverage, numeric claims, and refusal
   support; it is not semantic answer correctness or an LLM judge.
-- Citations are chunk-level. Markdown sources have no page numbers.
+- Ask Mode citations are chunk-level and Markdown sources have no page numbers.
+  Change Impact PDF sections preserve 1-based page metadata.
 - Retrieval thresholds and hybrid fusion weights are calibrated only for this local
   dataset.
-- Change Impact depends on document structure and explicit policy-language rules.
-  It is not a semantic/legal diff, a full-corpus conflict scan, or automatic policy
-  update application.
+- Change Impact depends on extractable document structure and explicit
+  policy-language rules. Scanned/OCR-only PDFs, ambiguous layouts, and tables are
+  not interpreted. It is not a semantic/legal diff, a full-corpus conflict scan,
+  or automatic policy update application.
 - The demo has no production authentication, authorization, monitoring, or
   deployment hardening.
 

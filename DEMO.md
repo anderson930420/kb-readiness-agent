@@ -99,8 +99,17 @@ Expected observations:
 
 ## 3. Change Impact
 
+The existing Markdown comparison remains available:
+
 ```bash
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
+```
+
+Generate and compare the deterministic 50-page PDF fixtures:
+
+```bash
+python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
+python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --write-report
 ```
 
 Expected observations:
@@ -109,6 +118,8 @@ Expected observations:
 - 4 changes are high risk.
 - 13 eval cases are identified as potentially stale or affected.
 - 9 KB updates are recommended.
+- PDF changes preserve page numbers; the meaningful sections are on pages 2, 3,
+  11, 19, 27, and 35 among unchanged boilerplate sections.
 - The result requires policy-owner/human review; it does not claim legal judgment
   or automatically apply updates.
 
@@ -123,9 +134,9 @@ The generated outputs are `data/reports/change_impact.json` and
 2. **Second minute — Readiness Audit:** compare the healthy and degraded reports.
    Emphasize that the same unchanged gate passes the complete corpus and rejects
    the intentionally incomplete fixture with actionable missing areas.
-3. **Third minute — Change Impact:** compare the bundled policies. Show how a
-   policy edit maps to risky sections, potentially stale eval answers, and concrete
-   KB update work.
+3. **Third minute — Change Impact:** compare the 50-page PDFs. Show that the same
+   section-level baseline and impact mappings are recovered with page metadata,
+   without treating the whole PDF as one context.
 
 The key distinction to state: this is a deterministic RAGOps-lite review workflow
 around a local extractive QA baseline with optional validated generation, not a
@@ -140,6 +151,8 @@ python -m eval.run_eval --retriever hybrid --write-report
 python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
 python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
+python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
+python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --write-report
 ./scripts/demo.sh
 ```
 
@@ -150,7 +163,7 @@ Expected baseline:
 - Ask Mode gate: `PASS`.
 - Launch recommendation: `Internal Pilot Ready`.
 - Degraded fixture: 26 chunks; gate `FAIL`; recommendation `Not Ready`.
-- Change Impact: 6 changed sections, 4 high risk, 13 impacted eval cases, 9 KB
-  updates.
+- Markdown and large-PDF Change Impact: 6 changed sections, 4 high risk, 13
+  impacted eval cases, 9 KB updates.
 - Generated chunks, embeddings, reports, `__pycache__/`, and `.pytest_cache/`
   remain ignored by git.

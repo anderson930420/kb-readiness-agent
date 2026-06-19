@@ -1,4 +1,4 @@
-"""Deterministic Change Impact Mode for Markdown policy documents."""
+"""Deterministic Change Impact Mode for Markdown and PDF policy documents."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import Iterable
 
 from .audit import load_eval_cases
-from .ingest import (
-    HEADING_RE,
-    PROJECT_ROOT,
-    SLUG_IN_TITLE_RE,
-    _chinese_title,
-    _slug,
+from .document_loader import (
+    _available_slug,
+    load_document,
+    parse_markdown_sections,
+    parse_pdf_sections,
 )
+from .ingest import PROJECT_ROOT
 
 
 DEFAULT_EVAL_PATH = PROJECT_ROOT / "eval" / "eval_set.jsonl"
@@ -30,7 +30,7 @@ DISCLAIMER = (
     "it does not claim full legal or semantic conflict detection."
 )
 KNOWN_LIMITATIONS = (
-    "Only Markdown H1/H2 structure and plain text are analyzed; tables, attachments, and lower-level headings are not interpreted.",
+    "Markdown H1/H2 and visually distinct PDF headings are analyzed; tables, scans/OCR, attachments, and ambiguous heading layouts are not interpreted.",
     "Section alignment uses slugs, normalized heading similarity, and lexical overlap rather than semantic embeddings or an LLM.",
     "Change detection is based on explicit numeric and policy-language signals and can miss paraphrases or legal nuance.",
     "Impacted eval cases and KB updates are conservative deterministic suggestions and require policy-owner validation.",
@@ -125,61 +125,10 @@ RELATED_KB_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 
-def parse_markdown_sections(path: Path | str) -> list[dict]:
-    """Parse Markdown H1/H2 bodies into policy sections."""
-
-    document_path = Path(path)
-    markdown = document_path.read_text(encoding="utf-8")
-    sections: list[dict] = []
-    heading_text: str | None = None
-    heading_level: int | None = None
-    body: list[str] = []
-
-    def flush() -> None:
-        if heading_text is None:
-            return
-        text = "\n".join(body).strip()
-        if not text:
-            return
-        sections.append(
-            {
-                "doc": document_path.name,
-                "section": heading_text,
-                "section_zh": _chinese_title(heading_text),
-                "section_slug": _available_slug(heading_text),
-                "heading_level": heading_level,
-                "text": text,
-            }
-        )
-
-    for line in markdown.splitlines():
-        heading = HEADING_RE.match(line)
-        if heading and len(heading.group(1)) <= 2:
-            flush()
-            heading_text = heading.group(2).strip()
-            heading_level = len(heading.group(1))
-            body = []
-        elif heading_text is not None:
-            body.append(line.rstrip())
-    flush()
-    return sections
-
-
-# Short aliases keep the public API convenient for callers and tests.
+# Backward-compatible parser aliases remain available from src.compare.
 parse_markdown = parse_markdown_sections
-parse_document = parse_markdown_sections
-
-
-def _available_slug(heading: str) -> str | None:
-    explicit = SLUG_IN_TITLE_RE.search(heading)
-    if explicit:
-        return explicit.group(1).lower()
-    # A generated ASCII slug is useful for an English heading. Generating one
-    # from a mixed/Chinese heading drops meaningful characters and can create
-    # false exact matches, so those headings use similarity alignment instead.
-    if re.search(r"[\u3400-\u9fff]", heading):
-        return None
-    return _slug(heading)
+parse_pdf = parse_pdf_sections
+parse_document = load_document
 
 
 def _normalized_heading(section: dict) -> str:
@@ -411,6 +360,10 @@ def detect_policy_changes(alignments: list[dict]) -> list[dict]:
             "new_section": new.get("section"),
             "old_doc": old.get("doc"),
             "new_doc": new.get("doc"),
+            "old_page": old.get("page"),
+            "old_page_end": old.get("page_end"),
+            "new_page": new.get("page"),
+            "new_page_end": new.get("page_end"),
             "old_text": old_text or None,
             "new_text": new_text or None,
             "added_text": added_text,
@@ -653,8 +606,8 @@ def compare_documents(
 
     old_document = Path(old_path)
     new_document = Path(new_path)
-    old_sections = parse_markdown_sections(old_document)
-    new_sections = parse_markdown_sections(new_document)
+    old_sections = load_document(old_document)
+    new_sections = load_document(new_document)
     alignments = align_sections(old_sections, new_sections)
     changes = detect_policy_changes(alignments)
     impacted = identify_impacted_eval_cases(changes, eval_path)
@@ -747,6 +700,11 @@ def render_markdown(result: dict) -> str:
             lines.append(
                 f"- Values: `{', '.join(values['old']) or 'none'}` → `{', '.join(values['new']) or 'none'}`"
             )
+        if change.get("old_page") is not None or change.get("new_page") is not None:
+            lines.append(
+                f"- Pages: old `{change.get('old_page') or 'none'}` → "
+                f"new `{change.get('new_page') or 'none'}`"
+            )
         if change["removed_text"]:
             lines.append(f"- Removed: {' '.join(change['removed_text'])}")
         if change["added_text"]:
@@ -834,11 +792,19 @@ def main() -> None:
     parser.add_argument("--new", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
+        "--write-report",
+        action="store_true",
+        help="Write report artifacts (retained as the default for backward compatibility)",
+    )
+    parser.add_argument(
         "--json", action="store_true", help="Print the full JSON result instead of the summary"
     )
     args = parser.parse_args()
 
-    result = compare_documents(args.old, args.new)
+    try:
+        result = compare_documents(args.old, args.new)
+    except ValueError as exc:
+        parser.error(str(exc))
     json_path, report_path = write_reports(result, args.output_dir)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))

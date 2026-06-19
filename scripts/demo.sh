@@ -36,3 +36,11 @@ fi
 python -m src.compare \
   --old compare_docs/old_refund_policy.md \
   --new compare_docs/new_refund_policy.md
+python -m scripts.build_large_pdf_fixture \
+  --old compare_docs/large_old_refund_policy.pdf \
+  --new compare_docs/large_new_refund_policy.pdf \
+  --pages 50
+python -m src.compare \
+  --old compare_docs/large_old_refund_policy.pdf \
+  --new compare_docs/large_new_refund_policy.pdf \
+  --write-report

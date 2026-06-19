@@ -287,7 +287,7 @@ with change_tab:
         old_path = _project_path(old_policy)
         new_path = _project_path(new_policy)
         if not old_path.is_file() or not new_path.is_file():
-            st.error("Both policy paths must point to readable Markdown files.")
+            st.error("Both policy paths must point to readable Markdown or PDF files.")
         else:
             try:
                 with st.spinner("Comparing policy sections and mapping impact..."):

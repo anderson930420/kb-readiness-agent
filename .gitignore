@@ -13,3 +13,5 @@ data/index/*
 data/logs/*
 !data/logs/.gitkeep
 data/reports/
+data/degraded/
+compare_docs/large_*_refund_policy.pdf
