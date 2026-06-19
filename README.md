@@ -1,121 +1,133 @@
-# AI Support KB Readiness Agent — Day 6
+# AI Support KB Readiness Agent
 
-This project is a local, bilingual demo for assessing whether a support knowledge
-base is ready for an AI assistant. It provides extractive Ask Mode answers with
-citations and deterministic groundedness checks, an official readiness eval gate,
-and rule-based Markdown policy change impact analysis. It does not use an LLM to
-generate answers or make legal judgments.
+AI Support KB Readiness Agent is a local, bilingual RAGOps-lite tool for support
+knowledge bases. It answers policy questions with citations, refuses unsupported
+questions, evaluates answer reliability across a curated eval set, generates a
+readiness report, and analyzes policy-document changes to identify which existing
+AI answers may become stale.
 
-## Setup
+It is more than a RAG chatbot because the primary output is not just an answer. The
+project exposes a deterministic reliability workflow around retrieval: structured
+answer evidence, groundedness checks, an Ask Mode quality gate, a launch-readiness
+recommendation, and policy-change impact mapping. It is a take-home demonstration,
+not a production-ready support or legal-analysis system.
 
-Python 3.10 or newer is required.
+The demo has three modes:
+
+- **Ask Mode:** bilingual extractive answers, chunk-level citations, and conservative
+  refusal/manual-review behavior.
+- **Readiness Audit:** eval metrics, gate status, knowledge gaps, and an
+  `Internal Pilot Ready` or remediation recommendation.
+- **Change Impact:** deterministic old/new policy comparison with changed sections,
+  risk levels, impacted eval cases, and required KB updates.
+
+## Quickstart
+
+Python 3.10 or newer is required. No API key or `.env` file is needed.
 
 ```bash
 python -m pip install -r requirements.txt
+python -m src.ingest
+python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid
+python -m eval.run_eval --retriever hybrid --write-report
+python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
 ```
 
-The optional UI has one additional dependency:
+The first dense or hybrid run may download
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Embeddings are then
+cached locally.
+
+For the optional three-tab UI:
 
 ```bash
 python -m pip install -r requirements-ui.txt
+streamlit run app.py
 ```
 
-No API key or `.env` file is required. Dense and hybrid retrieval use
-`paraphrase-multilingual-MiniLM-L12-v2` locally; the first run may download the
-model.
+The main outputs are:
 
-## Index the Ask Mode corpus
+- CLI `AnswerResult` summaries, with `--json` available for the full schema.
+- `data/reports/metrics.json` and `data/reports/readiness_report.md`.
+- `data/reports/change_impact.json` and
+  `data/reports/change_impact_report.md`.
 
-```bash
-python -m src.ingest
+Generated chunks, embeddings, reports, and caches are gitignored.
+
+## How the project works
+
+```text
+Corpus Markdown
+→ Ingested chunks
+→ Hybrid retrieval
+→ AnswerResult
+→ Eval gate
+→ Readiness report
+
+Old/New policy docs
+→ Section alignment
+→ Rule-based change detection
+→ Impacted eval cases / KB updates
+→ Change impact report
 ```
 
-This indexes only `corpus/` and writes exactly 34 chunks to
-`data/index/chunks.jsonl`. Files in `compare_docs/` remain isolated from Ask Mode.
-Dense embeddings are cached under `data/index/embeddings/`.
+Ask Mode ingestion reads only `corpus/` and writes exactly 34 chunks to
+`data/index/chunks.jsonl`. `compare_docs/` is intentionally isolated and is loaded
+only by Change Impact Mode. Hybrid retrieval combines the local BM25-style lexical
+path with multilingual dense retrieval using fixed score fusion.
 
-## Demo flow
+`AnswerResult` includes the question, retriever, answer or refusal, citations,
+confidence, human-review state, groundedness status, warnings, retrieved chunks,
+and latency. Answers are extracts from the highest-ranked evidence chunk; the
+project does not use an LLM to generate answers.
 
-### 1. Ask Mode
+## Demo
 
-```bash
-python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid
-python -m src.answer "客戶是否應該把醫療紀錄上傳到客服工單？" --retriever hybrid
-python -m src.answer "Can customers get a refund after 90 days for medical reasons?" --retriever hybrid
-```
-
-Each result includes an extractive answer or refusal, citations, confidence,
-human-review state, groundedness status, and warnings. Add `--json` for the full
-structured `AnswerResult`. `lexical`, `dense`, and `hybrid` retrievers are
-available; hybrid is recommended for this demo.
-
-### 2. Readiness Audit
-
-```bash
-python -m eval.run_eval --retriever hybrid --write-report
-```
-
-The official gate evaluates Chinese and English Ask Mode cases and writes:
-
-- `data/reports/metrics.json`
-- `data/reports/readiness_report.md`
-
-### 3. Change Impact
-
-```bash
-python -m src.compare \
-  --old compare_docs/old_refund_policy.md \
-  --new compare_docs/new_refund_policy.md
-```
-
-This writes:
-
-- `data/reports/change_impact.json`
-- `data/reports/change_impact_report.md`
-
-To run the complete CLI sequence:
+Run the complete CLI flow:
 
 ```bash
 ./scripts/demo.sh
 ```
 
-## Optional Streamlit UI
+For the reviewer-oriented questions, expected observations, and a three-minute
+walkthrough, see [DEMO.md](DEMO.md).
 
-After installing `requirements-ui.txt` and indexing the corpus:
-
-```bash
-streamlit run app.py
-```
-
-The UI has three tabs: Ask, Readiness Audit, and Change Impact. It calls the same
-Python APIs as the CLI and writes reports to the same gitignored locations.
-
-## Tests
+## Final validation
 
 ```bash
+python -m src.ingest
 python -m unittest discover -s tests
+python -m eval.run_eval --retriever hybrid --write-report
+python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
+./scripts/demo.sh
 ```
 
-## Expected outputs
+Expected baseline:
 
-- Ingestion reports `Indexed 34 corpus chunks`.
-- The current official hybrid readiness gate passes and recommends
-  `Internal Pilot Ready`, not external production readiness.
-- The bundled old/new refund policies produce deterministic high-risk changes,
-  impacted eval cases, required KB updates, and human-review recommendations.
-- Generated chunks, embeddings, and reports remain untracked because they are
-  gitignored.
+- Ingestion reports `Indexed 34 corpus chunks` from `corpus/` only.
+- All tests pass.
+- The Ask Mode gate is `PASS`.
+- The readiness recommendation is `Internal Pilot Ready`, not external production
+  readiness.
+- Change Impact reports 6 changed sections, 4 high-risk changes, 13 impacted eval
+  cases, and 9 required KB updates.
+- Generated runtime files remain ignored by git.
 
 ## Known limitations
 
-- The corpus is six synthetic Markdown documents and the eval set is small and
-  curated; results are not statistically representative of production traffic.
+- The corpus contains six synthetic Markdown documents and the eval set is small
+  and curated; results are not statistically representative of production traffic.
 - Answers are top-chunk extracts or deterministic refusals, not LLM-generated
   responses.
-- Groundedness validates citation provenance, citation coverage, numeric claims,
-  and refusal support; it is not semantic answer correctness.
+- Groundedness checks citation provenance and coverage, numeric claims, and refusal
+  support; it is not semantic answer correctness or an LLM judge.
 - Citations are chunk-level. Markdown sources have no page numbers.
-- Retrieval thresholds and hybrid fusion weights are calibrated only for the
-  current local dataset.
-- Change Impact uses explicit structure and policy-language rules. It is not a
-  full-corpus conflict scan, semantic diff, or legal analysis.
+- Retrieval thresholds and hybrid fusion weights are calibrated only for this local
+  dataset.
+- Change Impact depends on document structure and explicit policy-language rules.
+  It is not a semantic/legal diff, a full-corpus conflict scan, or automatic policy
+  update application.
+- The demo has no production authentication, authorization, monitoring, or
+  deployment hardening.
+
+See [DESIGN.md](DESIGN.md) for implementation details, metric definitions, design
+tradeoffs, and explicit scope boundaries.
