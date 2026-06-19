@@ -46,6 +46,11 @@ GAP_TOPICS_BY_REASON = {
     "insufficient_relevance": "Missing or undiscoverable policy coverage",
 }
 GAP_TOPICS_BY_SECTION = {
+    "standard_refund_window": "Standard and annual refund windows",
+    "renewal_payments": "Renewal payment refund policy",
+    "refund_processing_time": "Refund processing timeline",
+    "enterprise_automatic_refunds": "Enterprise refund review policy",
+    "enterprise_pricing_quote": "Enterprise quote handling",
     "unsupported_exceptions": "Refund exception / hardship policy",
     "enterprise_support_response_time": "Signed Enterprise SLA",
     "unsupported_privacy_questions": "Regional privacy legal advice",
@@ -166,6 +171,8 @@ def _gap_topic(record: dict) -> str:
     section = record.get("expected_section")
     if section in GAP_TOPICS_BY_SECTION:
         return GAP_TOPICS_BY_SECTION[section]
+    if section:
+        return "Policy coverage: " + section.replace("_", " ")
     return f"Policy coverage for: {record['question']}"
 
 
@@ -181,7 +188,15 @@ def extract_knowledge_gaps(records: Iterable[dict]) -> list[dict]:
         }
     )
     for record in records:
-        if record["answerable"] and not record["refused"]:
+        checks = record.get("checks", {})
+        missing_expected_evidence = not checks.get(
+            "source_hit", True
+        ) or not checks.get("section_hit", True)
+        if (
+            record["answerable"]
+            and not record["refused"]
+            and not missing_expected_evidence
+        ):
             continue
         topic = _gap_topic(record)
         gap = grouped[topic]

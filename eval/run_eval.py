@@ -251,7 +251,10 @@ def main() -> None:
         help="Write data/reports/metrics.json and readiness_report.md",
     )
     parser.add_argument(
-        "--report-dir", type=Path, default=DEFAULT_REPORT_DIR, help=argparse.SUPPRESS
+        "--report-dir",
+        type=Path,
+        default=DEFAULT_REPORT_DIR,
+        help="Report output directory (default: data/reports)",
     )
     args = parser.parse_args()
 
