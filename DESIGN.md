@@ -6,7 +6,8 @@
 The current implementation combines a bilingual Ask Mode gate, Knowledge Base
 Readiness Report, deterministic Markdown/PDF Change Impact Mode, and an optional
 three-tab Streamlit demo. The UI is a thin adapter over the existing Python APIs;
-there is no LLM-based answer generation or policy analysis.
+optional generative answers remain behind the same deterministic validation path.
+Change Impact is rule-based and does not use an LLM for policy analysis.
 
 ---
 
@@ -25,6 +26,24 @@ Knowledge Base Readiness workflow，服務 AI 導入顧問、PM、solution engin
 
 目前 Ask Mode 提供問答與 eval gate，Audit Mode 將 eval 結果包裝成 readiness
 artifacts，Change Impact Mode 則隔離比較新舊 Markdown/PDF policy 並標記可能失效的答案。
+
+---
+
+## Relationship to agent-taskflow
+
+This project inherits the validator-and-human-gated approval philosophy used by
+`agent-taskflow`, but it does not inherit that project’s runtime orchestration.
+There is no task graph, autonomous tool loop, distributed worker runtime, or agent
+scheduler in the Ask, Audit, or Change Impact paths.
+
+The inherited idea is narrower and deliberate: LLM output is an untrusted proposal,
+not an answer that is safe merely because a provider returned it. Optional
+generative output must cite retrieved `chunk_id` values and pass deterministic
+provenance and groundedness checks. The groundedness validator is the release gate:
+an allowed proposal can become the final answer; a blocked proposal is retained for
+audit but the user receives the safe extractive answer or refusal and a human-review
+requirement. High-risk audit and Change Impact results likewise remain review inputs,
+not automatic approvals or KB mutations.
 
 ---
 
@@ -194,10 +213,19 @@ Responses API structured JSON；Anthropic 使用 Messages API 並在本地驗證
 retrieval result。系統只用 retrieval result 建立 citation，不接受模型生成的文件 metadata。
 接著重用 `check_groundedness` 檢查 citation provenance 與 numeric/date/time support。
 
+因此 generated JSON 只是一份 untrusted proposal。`used_chunk_ids` 提供整體 evidence
+集合，而每個 structured claim 都必須附自己的 `chunk_id` citations；schema 合法不代表可
+release。deterministic validator 是 blocking gate，不提供 warning-only bypass。
+
 validator 也不允許 generated answer 覆寫既有 extractive refusal。任何檢查失敗時，
 `validator_decision=blocked`，generated text 只記錄於 `blocked_generated_answer`，final
 `answer` 保留安全的 extractive answer/refusal，並強制 `requires_human_review=true`、
 `confidence=low`。
+
+`fake_supported` 與 `fake_hallucination` 實作相同 structured-output contract，讓 demo 與
+regression tests 在沒有 API key、網路波動或 provider nondeterminism 的情況下重現 allow 與
+block。特別是 `fake_hallucination` 會產生 unsupported numeric claim，用來證明 release gate
+真的阻擋輸出，而不只是記錄警告。
 
 ### 4.8 Chunk-level source attribution
 
@@ -222,6 +250,28 @@ Audit Mode 仍只評估預設 extractive Ask Mode path，確保 gate 不依賴 A
 coverage、refusal quality、citation/groundedness、deterministic knowledge gaps、failure
 details 與 launch recommendation。Streamlit demo 可直接執行並呈現這些 artifacts。
 
+Readiness audit 必須能對 incomplete KB 失敗，否則 gate 只證明測試流程可執行，不能證明
+它會阻止不安全的 pilot。`src.degraded` 因此建立隔離、可重現的 degraded fixture：不改動
+primary `corpus/`，但移除 refund policy 與部分 Enterprise knowledge。相同 eval gate 必須
+對 healthy corpus 回傳 `PASS` / `Internal Pilot Ready`，並對 degraded corpus 回傳
+`FAIL` / `Not Ready`。
+
+Degraded report 不只列出 aggregate misses。它從 failed cases 與 evidence metadata 產生具體
+knowledge gaps，包括 refund windows、renewal refunds、refund processing、Enterprise SLA
+與 Enterprise quote handling，讓 reviewer 能把 gate failure 對應到可補齊的 KB 內容。
+
+### Session memory — active, process-local
+
+`src/session.py` 只保留目前 Python process 內的 turns。對 `What about enterprise
+customers?` 這類 underspecified follow-up，它先使用上一輪問題解析出 standalone question，
+再把 resolved question 送入正常 retrieval。session 不寫入檔案、資料庫或 embedding index，
+也不提供跨 process、跨使用者或 durable memory。
+
+Follow-up resolution 發生在 retrieval 之前，不是 evidence substitute。resolved question 仍
+必須通過相同 retrieval threshold、refusal behavior、citation construction 與 groundedness
+validation；generative mode 若明確啟用，也仍受 generation validator 阻擋。session memory
+不能繞過 retrieval 或 release gate。
+
 ### Change Impact Mode — active
 
 `src/document_loader.py` 依副檔名載入 Markdown 或 PDF。Markdown 使用 H1/H2；PDF 使用
@@ -237,6 +287,11 @@ Large-document strategy 是 structure first：先解析文件結構，再 alignm
 比較。完整 PDF 永遠不會被串成單一 prompt/context；目前 Change Impact path 也不呼叫 LLM。
 因此 50+ page 文件只增加 normalized sections 數量，不會突破單一 context window，也不會
 改變 Ask Mode ingestion、optional generation 或既有 eval/audit gates。
+
+PDF loader 使用 PyMuPDF 取得 text spans、font/layout signals 與 page boundaries，移除重複
+header/footer，辨識 section headings，並保留 1-based `page` / `page_end` metadata。比較器只
+接收抽取後的 normalized sections，逐 section alignment 與 diff；不做 whole-document prompt
+loading，也不把整份 PDF 傳給 generation provider。
 
 ---
 
@@ -303,6 +358,7 @@ answer/JSON contract、groundedness、citation provenance、medical refund refus
 query-scoped conflict warning、metrics schema、P2 scope isolation、readiness recommendation、
 report rendering，以及 Markdown/PDF parsing、page metadata、large-document alignment、
 refund-window risk、eval impact、KB update 與 Change Impact report generation。
+Frozen reviewer baseline 共 49 tests。
 
 ---
 
@@ -318,6 +374,7 @@ refund-window risk、eval impact、KB update 與 Change Impact report generation
 
 - `compare_docs/` 只由明確的 compare command 載入，不污染 Ask Mode index。
 - Markdown 與 text-based PDF 都先轉成 normalized sections；不做 whole-document prompt。
+- PDF section 保留 PyMuPDF 提取的 page metadata；comparison 僅逐 section 執行。
 - section alignment 與 policy-risk signals 都是 transparent deterministic rules。
 - P2 cases 用於 impact mapping，不代表新的 semantic answer-accuracy gate。
 - 高風險 changes 要求人工複核；報告只指出 possible answer invalidation。
@@ -345,9 +402,17 @@ refund-window risk、eval impact、KB update 與 Change Impact report generation
 - cache fingerprint 包含 model name 與 chunk text，但不包含遠端 model revision 或
   sentence-transformers version。
 - Markdown 沒有 page 概念，所以 citation 中的 `page` 為 `null`。
-- 系統沒有多輪對話記憶、權限控管、PII workflow 或 production deployment hardening。
+- Session memory 僅限單一 process，沒有 durable、跨 process 或 multi-user conversation
+  store；follow-up resolver 只使用上一輪 context，並不是通用對話理解。
+- 系統沒有權限控管、PII workflow 或 production deployment hardening。
 - Generative validator 能攔截 invalid chunk IDs 與 unsupported numeric/date/time claims，
   但不是完整 semantic faithfulness 或 policy-correctness judge。
+- Degraded knowledge gaps 來自 curated eval failures 與 deterministic metadata，不能發現 eval
+  set 未涵蓋的所有缺漏。
+- PDF loader 只支援有 extractable text 與可辨識 heading layout 的文件；沒有 OCR，且複雜
+  table、multi-column 或 ambiguous typography 可能造成 section extraction/alignment errors。
+- Change Impact 是 rule-based possible-impact mapping，不是 semantic/legal diff、full-corpus
+  conflict scan 或 automatic policy update application。
 - 模型與 embedding 計算在本機執行；首次使用預設模型通常需要下載模型檔。系統目前不會把
   support corpus 傳送給 API-based LLM；只有明確選擇 generative OpenAI / Anthropic provider
   時，retrieved chunks 才會連同問題送往該 provider。

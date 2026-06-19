@@ -1,8 +1,9 @@
 # Reviewer Demo Guide
 
-This walkthrough demonstrates the repository's three product modes without adding
-or modifying data. Allow extra time on the first hybrid run because the embedding
-model may need to download.
+This sequence demonstrates all three product modes without a real LLM provider or
+API key. It is ordered around reviewer decisions: verify grounded answers and safe
+refusal first, prove that generated hallucinations cannot pass the release gate,
+then inspect complete versus incomplete KB readiness and document-change impact.
 
 ## Setup
 
@@ -13,63 +14,87 @@ python -m pip install -r requirements.txt
 python -m src.ingest
 ```
 
-Expected setup result: `Indexed 34 corpus chunks`. Ask Mode indexes only `corpus/`;
-the old/new documents under `compare_docs/` remain isolated.
+Expected observation: ingestion reports `Indexed 34 corpus chunks`. Ask Mode reads
+only `corpus/`; `compare_docs/` remains isolated from retrieval.
 
-For the optional UI:
+The first hybrid command may download the multilingual embedding model. Later runs
+reuse its local embedding cache.
 
-```bash
-python -m pip install -r requirements-ui.txt
-streamlit run app.py
-```
-
-The UI presents the extractive Ask, Readiness Audit, and Change Impact workflows.
-Optional generative mode is currently exposed through the CLI.
-
-## 1. Ask Mode
-
-Run these questions in order:
+## 1. Normal grounded answer
 
 ```bash
-python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
-python -m src.answer "客戶是否應該把醫療紀錄上傳到客服工單？" --retriever hybrid
-python -m src.answer "Can customers get a refund after 90 days for medical reasons?" --retriever hybrid
-python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
-python -m src.session "What is the standard refund window?" "What about enterprise customers?" --retriever hybrid
+python -m src.answer \
+  "標準月付用戶的退款期限是多久？" \
+  --retriever hybrid \
+  --mode extractive
 ```
 
 Expected observations:
 
-1. The standard refund question returns a normal extractive answer with a citation
-   to the relevant refund-policy section.
-2. The medical-record question returns grounded privacy/sensitive-data guidance
-   with source evidence.
-3. The unsupported 90-day medical exception is not invented. The result refuses
-   or routes the request to manual review using policy evidence.
-4. The fake generative backend intentionally claims that a 90-day medical refund
-   is allowed. The validator blocks that output, preserves the extractive refusal
-   as the final answer, and sets low confidence plus human review.
-5. The session command resolves the second question into a standalone Enterprise
-   refund question before retrieval. Its evidence includes the Enterprise refund
-   FAQ, refund policy, and refund escalation SOP. Session turns exist only in the
-   current process; no history is written to disk.
+- The answer is source text from the standard refund-window policy.
+- The result includes a chunk citation, groundedness `supported`, and no human-review
+  requirement.
+- `Answer mode` is `extractive` and `Generation validator` is `not_run`.
 
-Point out that each result exposes confidence, citation identity, groundedness,
-warnings, review state, answer mode, validator decision, and optional generation
-trace. Add `--json` to any command to inspect the full `AnswerResult` contract.
-Extractive mode remains the default and requires no API key. The two fake providers
-also require no credentials; OpenAI and Anthropic are optional and require their
-respective environment keys.
+This is the default no-API-key path. `--mode extractive` is shown only to make the
+review step explicit.
 
-## 2. Readiness Audit
-
-Run the healthy audit into its own report directory:
+## 2. Unsupported question refusal
 
 ```bash
-python -m eval.run_eval --retriever hybrid --write-report --report-dir data/reports/healthy
+python -m src.answer \
+  "Can customers get a refund after 90 days for medical reasons?" \
+  --retriever hybrid \
+  --mode extractive
 ```
 
-Then generate the reproducible incomplete corpus and audit it separately:
+Expected observations:
+
+- The system does not invent a medical exception.
+- The final result refuses or escalates based on retrieved policy evidence.
+- The result is grounded and marked for human review where policy confirmation is
+  required.
+
+## 3. Fake LLM hallucination blocked
+
+```bash
+python -m src.answer \
+  "客戶如果因為醫療因素，90 天後還可以退款嗎？" \
+  --retriever hybrid \
+  --mode generative \
+  --llm-provider fake_hallucination
+```
+
+Expected observations:
+
+- The deterministic fake backend proposes an unsupported 90-day medical refund.
+- The validator reports `blocked` because the numeric claim is not supported by
+  the cited retrieved chunks.
+- The unsafe text does not become the final answer. The safe extractive refusal is
+  preserved, confidence is low, and human review is required.
+- With `--json`, the rejected proposal is visible in
+  `blocked_generated_answer` for auditability.
+
+This proves validator behavior reproducibly; it does not call a real model.
+
+## 4. Healthy readiness audit
+
+```bash
+python -m eval.run_eval \
+  --retriever hybrid \
+  --write-report \
+  --report-dir data/reports/healthy
+```
+
+Expected observations:
+
+- The bilingual Ask Mode gate is `PASS`.
+- The readiness recommendation is `Internal Pilot Ready`, not production ready.
+- Metrics and the Markdown report are isolated under
+  `data/reports/healthy/`.
+- Change-impact-only eval cases remain outside the Ask Mode gate.
+
+## 5. Degraded readiness audit
 
 ```bash
 python -m src.degraded
@@ -80,36 +105,42 @@ python -m eval.run_eval \
   --report-dir data/reports/degraded
 ```
 
-The second eval command intentionally exits with status 1 because the degraded
-gate fails. This is the expected audit result, not a command failure to ignore in
-automation.
+Expected observations:
+
+- The fixture contains 26 chunks, leaves the primary corpus unchanged, omits
+  `refund_policy.md`, and removes selected Enterprise FAQ sections.
+- The same readiness gate is `FAIL` and the recommendation is `Not Ready`.
+- The report names concrete gaps: refund windows, renewal refunds, refund
+  processing, Enterprise SLA, and Enterprise quote handling.
+- The eval command exits with status 1 by design. That non-zero status is the
+  machine-readable audit result, not an infrastructure failure.
+
+The full demo script handles this expected status and continues only when it is
+exactly 1.
+
+## 6. Process-local session follow-up
+
+```bash
+python -m src.session \
+  "What is the standard refund window?" \
+  "What about enterprise customers?" \
+  --retriever hybrid
+```
 
 Expected observations:
 
-- The healthy bilingual Ask Mode gate is `PASS` and recommends
-  `Internal Pilot Ready`, deliberately narrower than production readiness.
-- The degraded fixture leaves `corpus/` unchanged, omits `refund_policy.md`, and
-  removes selected Enterprise FAQ sections. Its gate is `FAIL` with a `Not Ready`
-  recommendation.
-- The healthy and degraded reports are isolated under `data/reports/healthy/` and
-  `data/reports/degraded/`. The degraded report identifies concrete missing areas,
-  including refund windows, renewal refunds, refund processing, Enterprise SLA,
-  and Enterprise quote handling.
-- Change-impact-only eval cases remain outside the Ask Mode gate.
+- Before retrieval, the second turn is resolved into a standalone Enterprise
+  refund question using the previous turn.
+- Retrieval then runs normally and cites Enterprise refund evidence.
+- Follow-up resolution does not bypass refusal or groundedness validation.
+- Turns exist only in this process; no session history is written to disk.
 
-## 3. Change Impact
-
-The existing Markdown comparison remains available:
+## 7. Markdown Change Impact
 
 ```bash
-python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
-```
-
-Generate and compare the deterministic 50-page PDF fixtures:
-
-```bash
-python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
-python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --write-report
+python -m src.compare \
+  --old compare_docs/old_refund_policy.md \
+  --new compare_docs/new_refund_policy.md
 ```
 
 Expected observations:
@@ -118,52 +149,50 @@ Expected observations:
 - 4 changes are high risk.
 - 13 eval cases are identified as potentially stale or affected.
 - 9 KB updates are recommended.
-- PDF changes preserve page numbers; the meaningful sections are on pages 2, 3,
-  11, 19, 27, and 35 among unchanged boilerplate sections.
-- The result requires policy-owner/human review; it does not claim legal judgment
-  or automatically apply updates.
+- The result requires policy-owner review and does not apply updates.
 
-The generated outputs are `data/reports/change_impact.json` and
-`data/reports/change_impact_report.md`.
-
-## Three-minute walkthrough
-
-1. **First minute — Ask Mode:** run the supported extractive refund question, the
-   unsupported medical-exception question, and the fake hallucination. Show that
-   the validator does not release the unsupported generated answer.
-2. **Second minute — Readiness Audit:** compare the healthy and degraded reports.
-   Emphasize that the same unchanged gate passes the complete corpus and rejects
-   the intentionally incomplete fixture with actionable missing areas.
-3. **Third minute — Change Impact:** compare the 50-page PDFs. Show that the same
-   section-level baseline and impact mappings are recovered with page metadata,
-   without treating the whole PDF as one context.
-
-The key distinction to state: this is a deterministic RAGOps-lite review workflow
-around a local extractive QA baseline with optional validated generation, not a
-production chatbot or an LLM-based legal analyzer.
-
-## Final validation checklist
+## 8. Large PDF Change Impact
 
 ```bash
-python -m src.ingest
-python -m unittest discover -s tests
-python -m eval.run_eval --retriever hybrid --write-report
-python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
-python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
-python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
-python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
-python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --write-report
+python -m scripts.build_large_pdf_fixture \
+  --old compare_docs/large_old_refund_policy.pdf \
+  --new compare_docs/large_new_refund_policy.pdf \
+  --pages 50
+python -m src.compare \
+  --old compare_docs/large_old_refund_policy.pdf \
+  --new compare_docs/large_new_refund_policy.pdf \
+  --write-report
+```
+
+Expected observations:
+
+- The PDF result matches the Markdown baseline: 6 changes, 4 high risk, 13
+  impacted eval cases, and 9 KB updates.
+- Changed sections preserve 1-based page metadata; meaningful fixture sections are
+  on pages 2, 3, 11, 19, 27, and 35 among unchanged boilerplate.
+- PyMuPDF extracts layout and page metadata, then comparison runs section by
+  section. The complete 50-page document is never loaded as one prompt.
+- Reports are written to `data/reports/change_impact.json` and
+  `data/reports/change_impact_report.md`.
+
+## Run the complete deterministic demo
+
+```bash
 ./scripts/demo.sh
 ```
 
-Expected baseline:
+The script executes the same eight steps, treats the degraded audit’s status 1 as
+expected, and passes without OpenAI or Anthropic credentials.
 
-- 34 corpus-only chunks.
-- All tests pass.
+## Reviewer baseline
+
+- 49 tests pass.
 - Ask Mode gate: `PASS`.
-- Launch recommendation: `Internal Pilot Ready`.
-- Degraded fixture: 26 chunks; gate `FAIL`; recommendation `Not Ready`.
-- Markdown and large-PDF Change Impact: 6 changed sections, 4 high risk, 13
-  impacted eval cases, 9 KB updates.
-- Generated chunks, embeddings, reports, `__pycache__/`, and `.pytest_cache/`
-  remain ignored by git.
+- Healthy audit: `Internal Pilot Ready`.
+- Degraded audit: `Not Ready`.
+- Markdown and 50-page PDF Change Impact: 6 changes, 4 high risk, 13 impacted
+  eval cases, 9 KB updates.
+- `demo.sh` passes.
+
+Use `--json` on Ask or Change Impact commands when the complete structured evidence
+contract is more useful than the CLI summary.

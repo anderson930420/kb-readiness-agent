@@ -1,136 +1,205 @@
-# AI Support KB Readiness Agent
+# KB Readiness Agent
 
-AI Support KB Readiness Agent is a local, bilingual RAGOps-lite tool for support
-knowledge bases. It answers policy questions with citations, refuses unsupported
-questions, evaluates answer reliability across a curated eval set, generates a
-readiness report, and analyzes policy-document changes to identify which existing
-AI answers may become stale.
+KB Readiness Agent is a local RAG readiness and reliability audit tool for support
+knowledge bases. It is built to answer a reviewer’s operational questions: Does
+retrieval find the right evidence? Does the system refuse unsupported requests?
+Are citations and claims grounded? Is an incomplete knowledge base correctly
+rejected? Which evaluated answers and KB sections are affected when policy changes?
 
-It is more than a RAG chatbot because the primary output is not just an answer. The
-project exposes a deterministic reliability workflow around retrieval: structured
-answer evidence, groundedness checks, an Ask Mode quality gate, a launch-readiness
-recommendation, and policy-change impact mapping. It is a take-home demonstration,
-not a production-ready support or legal-analysis system.
+This is not a generic chatbot. Ask Mode provides a small, inspectable QA surface,
+but the project’s primary outputs are reliability evidence, readiness gates,
+knowledge-gap reports, and change-impact reports. The repository is a deterministic
+take-home demonstration, not a production support or legal-analysis system.
 
-The demo has three modes:
+## What to review
 
-- **Ask Mode:** bilingual extractive answers by default, optional validated
-  generative answers, chunk-level citations, and conservative refusal/manual-review
-  behavior.
-- **Readiness Audit:** eval metrics, gate status, knowledge gaps, and an
-  `Internal Pilot Ready` or remediation recommendation.
-- **Change Impact:** deterministic old/new Markdown or PDF policy comparison with
-  changed sections, risk levels, impacted eval cases, and required KB updates.
+| Mode | Reviewer question | Output |
+|---|---|---|
+| **Ask** | Can the system answer supported questions, cite evidence, and refuse unsupported ones? | Structured answer/refusal, chunk citations, confidence, groundedness, review state |
+| **Readiness Audit** | Is this KB complete and reliable enough for a limited internal pilot? | Eval metrics, Ask Mode gate, concrete knowledge gaps, readiness recommendation |
+| **Change Impact** | Which evaluated answers and KB sections may be stale after a policy update? | Changed sections, risk levels, impacted eval cases, required KB updates |
+
+Extractive Ask Mode is the default. It returns retrieved source text or a
+deterministic refusal, runs locally, and requires no API key. All official tests,
+audits, and the complete demo use this no-key path.
+
+Generative Ask Mode is optional and explicit. It receives only the question,
+generation contract, and retrieved chunks; it must return structured claims with
+`chunk_id` citations. The generated answer is treated as an untrusted proposal and
+cannot be released unless the deterministic validator accepts its citations,
+provenance, and groundedness. Deterministic fake providers demonstrate both the
+allowed and blocked paths without credentials.
 
 ## Quickstart
 
-Python 3.10 or newer is required. The default extractive mode needs no API key or
-`.env` file.
+Python 3.10 or newer is required.
 
 ```bash
 python -m pip install -r requirements.txt
 python -m src.ingest
-python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
-python -m eval.run_eval --retriever hybrid --write-report
-python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
-python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
-python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --write-report
+python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid
 ```
 
-The first dense or hybrid run may download
-`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Embeddings are then
-cached locally.
+Expected ingestion result: `Indexed 34 corpus chunks`. Ask Mode reads only
+`corpus/`; policy fixtures under `compare_docs/` never enter the retrieval index.
 
-For the optional three-tab UI:
+The first dense or hybrid run may download
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Corpus embeddings
+are cached locally after that.
+
+Run the deterministic reviewer sequence with no API key:
+
+```bash
+./scripts/demo.sh
+```
+
+See [DEMO.md](DEMO.md) for the eight review steps and expected observations.
+
+## Ask Mode: default extractive and optional generation
+
+Supported question, using the default extractive mode:
+
+```bash
+python -m src.answer "標準月付用戶的退款期限是多久？" \
+  --retriever hybrid
+```
+
+Unsupported question, which must refuse rather than invent an exception:
+
+```bash
+python -m src.answer \
+  "Can customers get a refund after 90 days for medical reasons?" \
+  --retriever hybrid
+```
+
+Reproducible validator-blocking example:
+
+```bash
+python -m src.answer \
+  "客戶如果因為醫療因素，90 天後還可以退款嗎？" \
+  --retriever hybrid \
+  --mode generative \
+  --llm-provider fake_hallucination
+```
+
+The fake backend intentionally proposes an unsupported 90-day refund exception.
+The validator blocks it, retains the safe extractive refusal as the final answer,
+sets low confidence, and requires human review. The rejected proposal remains
+visible as `blocked_generated_answer` when `--json` is used.
+
+Real OpenAI and Anthropic providers are available only as optional integrations.
+They require `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` and never participate in the
+official no-key validation baseline. `.env.example` is a reference; the project
+does not automatically load `.env` files.
+
+## Readiness Audit: healthy versus degraded
+
+Audit the complete KB and write isolated report artifacts:
+
+```bash
+python -m eval.run_eval \
+  --retriever hybrid \
+  --write-report \
+  --report-dir data/reports/healthy
+```
+
+Build a deterministic incomplete KB, then audit it with the same gate:
+
+```bash
+python -m src.degraded
+python -m eval.run_eval \
+  --retriever hybrid \
+  --index data/degraded/index/chunks.jsonl \
+  --write-report \
+  --report-dir data/reports/degraded
+```
+
+The healthy corpus must produce Ask Mode gate `PASS` and recommendation
+`Internal Pilot Ready`. The degraded fixture deliberately omits the refund policy
+and selected Enterprise knowledge; it must produce gate `FAIL`, recommendation
+`Not Ready`, and concrete missing topics. The degraded eval exits with status 1 by
+design so automation cannot mistake an unsafe KB for a successful audit.
+
+Audit artifacts are `metrics.json` and `readiness_report.md` in the selected report
+directory.
+
+## Change Impact: Markdown and large PDF
+
+Compare the Markdown policy fixtures:
+
+```bash
+python -m src.compare \
+  --old compare_docs/old_refund_policy.md \
+  --new compare_docs/new_refund_policy.md
+```
+
+Generate deterministic 50-page PDF fixtures and compare them:
+
+```bash
+python -m scripts.build_large_pdf_fixture \
+  --old compare_docs/large_old_refund_policy.pdf \
+  --new compare_docs/large_new_refund_policy.pdf \
+  --pages 50
+python -m src.compare \
+  --old compare_docs/large_old_refund_policy.pdf \
+  --new compare_docs/large_new_refund_policy.pdf \
+  --write-report
+```
+
+Markdown uses H1/H2 structure. PDF loading uses PyMuPDF layout metadata to remove
+repeated headers and footers, identify headings, preserve 1-based page metadata,
+and normalize sections. Comparison is section by section; the complete PDF is
+never loaded as one prompt or context, and Change Impact does not call an LLM.
+
+Both fixture comparisons produce the same baseline: 6 changes, 4 high-risk
+changes, 13 impacted eval cases, and 9 required KB updates. Reports are written as
+`data/reports/change_impact.json` and
+`data/reports/change_impact_report.md` unless another output directory is selected.
+
+## Architecture and evidence contracts
+
+```text
+corpus/*.md
+  -> 34 section chunks
+  -> lexical / multilingual dense / hybrid retrieval
+  -> extractive answer or optional generated proposal
+  -> deterministic groundedness validator
+  -> Ask Mode eval gate
+  -> readiness metrics and recommendation
+
+old/new Markdown or text-based PDF
+  -> normalized sections with source metadata
+  -> deterministic section alignment and policy-rule comparison
+  -> risk, eval impact, and required KB updates
+```
+
+`AnswerResult` preserves the question, answer or refusal, retrieved chunks,
+citations, confidence, human-review state, groundedness result, warnings, latency,
+answer mode, validator decision, and optional generation trace. `--json` exposes
+the complete schema.
+
+Session memory is process-local. It rewrites an underspecified follow-up into a
+standalone question before retrieval, then runs the same retrieval, refusal, and
+groundedness path. It neither persists history nor bypasses evidence validation.
+
+For implementation details and explicit design boundaries, see
+[DESIGN.md](DESIGN.md).
+
+## Optional UI
 
 ```bash
 python -m pip install -r requirements-ui.txt
 streamlit run app.py
 ```
 
-The main outputs are:
+The three tabs expose Ask, Readiness Audit, and Change Impact through the existing
+Python APIs. The UI does not change their gates or scoring behavior.
 
-- CLI `AnswerResult` summaries, with `--json` available for the full schema.
-- `data/reports/metrics.json` and `data/reports/readiness_report.md`.
-- `data/reports/change_impact.json` and
-  `data/reports/change_impact_report.md`.
-
-Generated chunks, embeddings, reports, and caches are gitignored.
-
-## How the project works
-
-```text
-Corpus Markdown
-→ Ingested chunks
-→ Hybrid retrieval
-→ AnswerResult
-→ Eval gate
-→ Readiness report
-
-Old/New Markdown or PDF policy docs
-→ Structured document loader
-→ Section alignment
-→ Rule-based change detection
-→ Impacted eval cases / KB updates
-→ Change impact report
-```
-
-Ask Mode ingestion reads only `corpus/` and writes exactly 34 chunks to
-`data/index/chunks.jsonl`. `compare_docs/` is intentionally isolated and is loaded
-only by Change Impact Mode. Hybrid retrieval combines the local BM25-style lexical
-path with multilingual dense retrieval using fixed score fusion.
-
-`AnswerResult` includes the question, retriever, answer or refusal, citations,
-confidence, human-review state, groundedness status, warnings, retrieved chunks,
-latency, answer mode, validator decision, and an optional generation trace. Existing
-fields remain present. Extractive mode returns the highest-ranked evidence chunk or
-a deterministic refusal exactly as before.
-
-Generation is opt-in and always runs behind the deterministic validator. Fake
-providers make the path reproducible without credentials:
-
-```bash
-python -m src.answer "標準月付用戶的退款期限是多久？" \
-  --retriever hybrid --mode generative --llm-provider fake_supported
-python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" \
-  --retriever hybrid --mode generative --llm-provider fake_hallucination
-```
-
-The second command intentionally produces an unsupported numeric claim. The
-validator blocks it, keeps the safe extractive refusal as the final answer, marks
-the result for human review, and records the rejected text in
-`blocked_generated_answer`.
-
-Real providers are optional. Export `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, then
-select `--llm-provider openai|anthropic`; use `--llm-model` to override the provider
-default. Context sent to a real provider consists of the question, generation
-contract, and retrieved chunks. Copy `.env.example` only as a configuration
-reference; this project does not automatically load `.env` files.
-
-Change Impact accepts `.md`, `.markdown`, and text-based `.pdf` files. Markdown
-uses H1/H2 structure. PDF loading uses PyMuPDF layout metadata to remove repeated
-headers/footers, identify visually distinct headings, and preserve each section's
-title, slug, start/end page, and text. Large documents are aligned and compared as
-normalized sections; the complete PDF is never treated as one prompt or context.
-
-## Demo
-
-Run the complete CLI flow:
-
-```bash
-./scripts/demo.sh
-```
-
-For the reviewer-oriented questions, expected observations, and a three-minute
-walkthrough, see [DEMO.md](DEMO.md).
-
-## Final validation
+## Final validation baseline
 
 ```bash
 python -m src.ingest
 python -m unittest discover -s tests
-python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode extractive
-python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
 python -m eval.run_eval --retriever hybrid --write-report
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
 python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
@@ -138,36 +207,33 @@ python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compa
 ./scripts/demo.sh
 ```
 
-Expected baseline:
+Frozen reviewer baseline:
 
-- Ingestion reports `Indexed 34 corpus chunks` from `corpus/` only.
-- All tests pass.
-- The Ask Mode gate is `PASS`.
-- The readiness recommendation is `Internal Pilot Ready`, not external production
-  readiness.
-- Change Impact reports 6 changed sections, 4 high-risk changes, 13 impacted eval
-  cases, and 9 required KB updates.
-- Generated runtime files remain ignored by git.
+- 49 tests pass.
+- Ask Mode gate: `PASS`.
+- Healthy audit: `Internal Pilot Ready`.
+- Degraded audit: `Not Ready`.
+- Markdown Change Impact: 6 changes, 4 high risk, 13 impacted eval cases, 9 KB updates.
+- 50-page PDF Change Impact: 6 changes, 4 high risk, 13 impacted eval cases, 9 KB updates.
+- `demo.sh` passes without a real API key.
 
-## Known limitations
+## Limitations
 
-- The corpus contains six synthetic Markdown documents and the eval set is small
-  and curated; results are not statistically representative of production traffic.
-- Extractive answers are top-chunk extracts or deterministic refusals. Optional
-  generation is context-only and validated, but the deterministic checks are not a
-  complete semantic-entailment judge.
-- Groundedness checks citation provenance and coverage, numeric claims, and refusal
-  support; it is not semantic answer correctness or an LLM judge.
-- Ask Mode citations are chunk-level and Markdown sources have no page numbers.
-  Change Impact PDF sections preserve 1-based page metadata.
-- Retrieval thresholds and hybrid fusion weights are calibrated only for this local
-  dataset.
-- Change Impact depends on extractable document structure and explicit
-  policy-language rules. Scanned/OCR-only PDFs, ambiguous layouts, and tables are
-  not interpreted. It is not a semantic/legal diff, a full-corpus conflict scan,
-  or automatic policy update application.
-- The demo has no production authentication, authorization, monitoring, or
-  deployment hardening.
-
-See [DESIGN.md](DESIGN.md) for implementation details, metric definitions, design
-tradeoffs, and explicit scope boundaries.
+- The corpus is six synthetic Markdown documents and the eval set is small and
+  curated; passing results are not production-traffic evidence.
+- Extractive answers are top-chunk source text, not synthesized support responses.
+- The generative validator checks citation provenance, claim coverage, and
+  numeric/date/time support, but is not a complete semantic-entailment or policy
+  correctness judge.
+- Retrieval thresholds and hybrid fusion weights are calibrated only for this
+  local fixture.
+- Ask citations are chunk-level. Markdown has no page numbers; PDF Change Impact
+  sections preserve pages but do not provide sentence-level citations.
+- Session memory exists only in the current process and is not a durable or
+  multi-user conversation store.
+- PDF comparison requires extractable text and usable visual structure. It does
+  not OCR scanned PDFs or reliably interpret complex tables and ambiguous layouts.
+- Change Impact is deterministic policy-rule analysis, not a semantic/legal diff,
+  a full-corpus conflict scan, or automatic policy update application.
+- There is no production authentication, authorization, provider observability,
+  rate limiting, cost control, monitoring, or deployment hardening.
