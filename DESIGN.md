@@ -62,7 +62,7 @@ not automatic approvals or KB mutations.
 | Embedding cache | 依 model name 與 chunk content fingerprint，快取為 `data/index/embeddings/*.npz` |
 | Hybrid retrieval | lexical 與 dense 分數各自 min-max normalize，再以固定 0.5 / 0.5 權重合併 |
 | Answer behavior | 預設 extractive：回傳最高排名 chunk 原文，或依檢索門檻與已知 unsupported policy evidence 拒答；optional generative mode 不改變預設路徑 |
-| Optional generation | context-only prompt；OpenAI / Anthropic optional providers；`fake_supported` / `fake_hallucination` deterministic backends |
+| Optional generation | fixed closed-book JSON contract；MiniMax-M3 / OpenAI / Anthropic optional providers；`fake_supported` / `fake_hallucination` deterministic backends |
 | Generation validator | 驗證 used/claim chunk IDs、每個 claim 的 citation、retrieval provenance，並重用 deterministic groundedness；blocked output 不會成為 final answer |
 | Citations | chunk-level citation：文件、section、section slug、chunk ID、evidence text |
 | Groundedness | deterministic checks：citation presence/provenance、numeric claim support、refusal support |
@@ -85,7 +85,7 @@ not automatic approvals or KB mutations.
 - Chroma、LlamaIndex、ElasticSearch 或其他外部 vector/search framework
 - production BM25 service 或 RRF；目前是自製 BM25-style lexical scoring 與 score fusion
 - cross-encoder reranker
-- production-grade LLM retries、rate limiting、cost controls 或 provider observability
+- generalized production-grade rate limiting、cost controls 或 provider observability（MiniMax 僅提供 bounded transient retry）
 - production authentication / authorization
 - full semantic diff 與 full-corpus conflict scanning
 - automatic policy update application
@@ -203,24 +203,28 @@ smoke cases 上驗證，不能視為 production calibration。
 ### 4.7 Optional generative answer 與 validator
 
 `--mode generative` 是明確 opt-in，且必須選擇 `--llm-provider`。prompt 只包含問題、
-JSON contract 與實際 retrieved chunks，並要求模型不得使用外部知識。OpenAI 使用
-Responses API structured JSON；Anthropic 使用 Messages API 並在本地驗證 JSON shape。
-兩者分別只在設定 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 時可用。fake providers 供測試
-與 demo 使用，不需要網路或憑證。
+固定 closed-book JSON contract 與實際 retrieved chunks，並要求模型不得使用外部知識。
+MiniMax-M3 透過 OpenAI-compatible SDK 呼叫，預設 endpoint 為
+`https://api.minimax.io/v1`，並關閉 thinking、限制 completion token 數與 transient retry。
+OpenAI 使用 Responses API structured JSON；Anthropic 使用 Messages API。三者分別只在
+設定對應 API key 時可用，且 SDK import 不影響 no-key path。fake providers 供測試與 demo
+使用，不需要網路或憑證。
 
-模型輸出必須包含 `refused`、`refusal_reason`、`answer`、`used_chunk_ids`、`claims` 與
-`requires_human_review`。每個 claim 都必須列出至少一個 chunk ID；所有 ID 必須出現在
-retrieval result。系統只用 retrieval result 建立 citation，不接受模型生成的文件 metadata。
-接著重用 `check_groundedness` 檢查 citation provenance 與 numeric/date/time support。
+模型輸出 contract 為 `status`、`answer`、`claims` 與 `missing_evidence`；`status` 只能是
+`answered` 或 `insufficient_evidence`。每個 claim 都必須列出至少一個 chunk ID；所有 ID
+必須出現在 retrieval result。系統只用 retrieval result 建立 citation，不接受模型生成的
+文件 metadata。每個 claim 以自己的 citations 檢查 groundedness，再對整體 answer 重用
+`check_groundedness` 檢查 citation provenance 與 numeric/date/time support。
 
-因此 generated JSON 只是一份 untrusted proposal。`used_chunk_ids` 提供整體 evidence
-集合，而每個 structured claim 都必須附自己的 `chunk_id` citations；schema 合法不代表可
-release。deterministic validator 是 blocking gate，不提供 warning-only bypass。
+因此 generated JSON 只是一份 untrusted proposal。internal `used_chunk_ids` 由 claims 的
+citations 建立；schema 合法不代表可 release。`insufficient_evidence` 只有在 answer 仍是明確
+安全拒答時才能通過。deterministic validator 是 blocking gate，不提供 warning-only bypass。
 
 validator 也不允許 generated answer 覆寫既有 extractive refusal。任何檢查失敗時，
 `validator_decision=blocked`，generated text 只記錄於 `blocked_generated_answer`，final
 `answer` 保留安全的 extractive answer/refusal，並強制 `requires_human_review=true`、
-`confidence=low`。
+`confidence=low`。MiniMax 的 malformed JSON 同樣轉成 blocked proposal（除非 Python caller
+明確指定 fail-fast），保留 raw output 與 parse error，不會直接釋出或取代 fallback。
 
 `fake_supported` 與 `fake_hallucination` 實作相同 structured-output contract，讓 demo 與
 regression tests 在沒有 API key、網路波動或 provider nondeterminism 的情況下重現 allow 與
@@ -385,8 +389,8 @@ Frozen reviewer baseline 共 49 tests。
 
 - Chroma 或 ElasticSearch：只在 corpus 規模、持久化或 filtering 需求證明必要時引入。
 - production BM25 與 RRF：以 retrieval ablation 證明優於目前 score fusion 後再替換。
-- Production generation：以 semantic entailment、retry/rate-limit、cost、latency 與 provider
-  failure eval 證明可靠後，再考慮擴大 optional OpenAI / Anthropic path。
+- Production generation：以 semantic entailment、rate-limit、cost、latency 與 provider
+  failure eval 證明可靠後，再考慮擴大 optional live-provider path。
 - Query rewriting、HyDE、GraphRAG 或 RAPTOR：只針對明確 failure modes 引入。
 - row-level access、PII controls、audit logs 與持續品質監控。
 
@@ -414,8 +418,8 @@ Frozen reviewer baseline 共 49 tests。
 - Change Impact 是 rule-based possible-impact mapping，不是 semantic/legal diff、full-corpus
   conflict scan 或 automatic policy update application。
 - 模型與 embedding 計算在本機執行；首次使用預設模型通常需要下載模型檔。系統目前不會把
-  support corpus 傳送給 API-based LLM；只有明確選擇 generative OpenAI / Anthropic provider
-  時，retrieved chunks 才會連同問題送往該 provider。
+  support corpus 傳送給 API-based LLM；只有明確選擇 generative MiniMax / OpenAI /
+  Anthropic provider 時，retrieved chunks 才會連同問題送往該 provider。
 
 ---
 
@@ -439,9 +443,9 @@ python -m src.answer "Can customers get a refund after 90 days for medical reaso
 # Optional generative mode（deterministic fake backend；no API key）
 python -m src.answer "客戶如果因為醫療因素，90 天後還可以退款嗎？" --retriever hybrid --mode generative --llm-provider fake_hallucination
 
-# Optional real provider（requires the matching environment key）
-export OPENAI_API_KEY="..."
-python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode generative --llm-provider openai --llm-model gpt-4.1-mini
+# Optional MiniMax-M3 provider（requires MINIMAX_API_KEY）
+export MINIMAX_API_KEY="..."
+python -m src.answer "標準月付用戶的退款期限是多久？" --retriever hybrid --mode generative --llm-provider minimax
 
 # 中英文 retrieval diagnostics；排除 P2 change-impact cases
 python -m eval.run_eval --retriever hybrid --top-k 3
@@ -463,7 +467,9 @@ streamlit run app.py
 python -m unittest discover -s tests -v
 ```
 
-預設 extractive CLI、tests、eval、fake providers 與 Streamlit 都沒有 API key 設定需求。
-`.env.example` 只列出 optional real-provider keys，程式不會自動載入 `.env`。Streamlit
+預設 extractive CLI、deterministic tests/eval、fake providers 與 Streamlit 都沒有 API key
+設定需求。MiniMax live tests 在缺少 `MINIMAX_API_KEY` 時自動 skip，live 結果只記錄於
+`generative_sample_runs.md`，不進入 deterministic 100% baseline table。`.env.example` 只列出
+optional real-provider settings，程式不會自動載入 `.env`。Streamlit
 application 是 optional demo layer，不改變 retrieval scoring、groundedness、eval metrics
 或 Change Impact rules。

@@ -258,8 +258,11 @@ def _states_insufficient_evidence(text: str) -> bool:
         (
             "沒有足夠依據",
             "不足以回答",
+            "證據不足",
+            "資訊不足",
             "does not contain enough evidence",
             "insufficient evidence",
+            "evidence is insufficient",
             "not enough evidence",
         ),
     )
@@ -486,6 +489,7 @@ def answer_question(
     mode: AnswerMode = "extractive",
     llm_provider: LLMProvider | None = None,
     llm_model: str | None = None,
+    generation_fail_fast: bool = False,
 ) -> AnswerResult:
     started = perf_counter()
     results = retrieve(
@@ -509,6 +513,7 @@ def answer_question(
             result,
             provider=llm_provider,
             model=llm_model,
+            fail_fast=generation_fail_fast,
         )
     return replace(result, latency_ms=round((perf_counter() - started) * 1000, 3))
 
@@ -532,8 +537,14 @@ def _validate_generation(
     baseline: AnswerResult,
 ) -> tuple[list[Citation], GroundednessResult, list[str], list[str]]:
     retrieved_ids = {chunk["chunk_id"] for chunk in baseline.retrieved_chunks}
+    retrieved_by_id = {
+        chunk["chunk_id"]: chunk for chunk in baseline.retrieved_chunks
+    }
     used_ids = set(generated.used_chunk_ids)
     errors: list[str] = []
+
+    if generated.parse_error:
+        errors.append(f"Generated proposal is malformed: {generated.parse_error}")
 
     invalid_used_ids = sorted(used_ids - retrieved_ids)
     if invalid_used_ids:
@@ -558,9 +569,38 @@ def _validate_generation(
                 f"Generated claim {index} cites chunks absent from used_chunk_ids: "
                 + ", ".join(undeclared_claim_ids)
             )
+        claim_citations = [
+            _citation(retrieved_by_id[chunk_id])
+            for chunk_id in dict.fromkeys(claim["chunk_ids"])
+            if chunk_id in retrieved_by_id
+        ]
+        claim_groundedness, _ = check_groundedness(
+            claim["text"],
+            refused=False,
+            citations=claim_citations,
+            retrieved_chunks=baseline.retrieved_chunks,
+        )
+        if claim_groundedness["status"] != "supported":
+            errors.extend(
+                f"Generated claim {index}: {message}"
+                for message in claim_groundedness["unsupported_claims"]
+            )
 
     if not generated.refused and not generated.claims:
         errors.append("Non-refused generated answer has no claims")
+    if generated.contract_status == "insufficient_evidence" and not generated.refused:
+        errors.append(
+            "insufficient_evidence status is inconsistent with a non-refusal proposal"
+        )
+    if generated.contract_status == "answered" and generated.refused:
+        errors.append("answered status is inconsistent with a refusal proposal")
+    if (
+        generated.refused
+        or generated.contract_status == "insufficient_evidence"
+    ) and not _states_insufficient_evidence(generated.answer):
+        errors.append(
+            "insufficient_evidence proposal is not a safe insufficient-evidence refusal"
+        )
     if baseline.refused and not generated.refused:
         errors.append("Generated answer attempted to override an extractive refusal")
 
@@ -582,12 +622,14 @@ def _generate_and_validate(
     *,
     provider: LLMProvider,
     model: str | None,
+    fail_fast: bool = False,
 ) -> AnswerResult:
     generated, resolved_model, prompt = generate_answer(
         question,
         baseline.retrieved_chunks,
         provider=provider,
         model=model,
+        fail_fast=fail_fast,
     )
     citations, generated_groundedness, generated_warnings, errors = (
         _validate_generation(generated, baseline=baseline)
@@ -601,6 +643,9 @@ def _generate_and_validate(
         "prompt_length": len(prompt),
         "used_chunk_ids": generated.used_chunk_ids,
         "claims": generated.claims,
+        "contract_status": generated.contract_status,
+        "missing_evidence": generated.missing_evidence,
+        "parse_error": generated.parse_error,
         "generated_groundedness": generated_groundedness,
         "validation_errors": errors,
     }

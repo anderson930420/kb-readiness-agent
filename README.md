@@ -87,10 +87,28 @@ The validator blocks it, retains the safe extractive refusal as the final answer
 sets low confidence, and requires human review. The rejected proposal remains
 visible as `blocked_generated_answer` when `--json` is used.
 
-Real OpenAI and Anthropic providers are available only as optional integrations.
-They require `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` and never participate in the
-official no-key validation baseline. `.env.example` is a reference; the project
-does not automatically load `.env` files.
+MiniMax-M3, OpenAI, and Anthropic are available only as optional live integrations.
+MiniMax uses `MINIMAX_API_KEY`; select it with `--llm-provider minimax`. No live
+provider participates in the official deterministic no-key validation baseline.
+`.env.example` is a reference; the project does not automatically load `.env`
+files.
+
+```bash
+export MINIMAX_API_KEY="..."
+python -m src.answer \
+  "標準月付用戶的退款期限是多久？" \
+  --retriever hybrid \
+  --mode generative \
+  --llm-provider minimax
+```
+
+MiniMax defaults to `https://api.minimax.io/v1` and `MiniMax-M3`. The optional
+`MINIMAX_BASE_URL`, `MINIMAX_MODEL`, `MINIMAX_TIMEOUT_SECONDS`,
+`MINIMAX_MAX_RETRIES`, and `MINIMAX_RETRY_BASE_SECONDS` variables override its
+bounded request and retry settings. Live proposals still pass the same local
+citation, retrieval-provenance, and groundedness gate. See
+[generative_sample_runs.md](generative_sample_runs.md) for non-deterministic live
+samples; they are intentionally separate from official eval results.
 
 ## Readiness Audit: healthy versus degraded
 
@@ -209,7 +227,7 @@ python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compa
 
 Frozen reviewer baseline:
 
-- 49 tests pass.
+- 49 deterministic tests pass; optional MiniMax live tests skip without a key.
 - Ask Mode gate: `PASS`.
 - Healthy audit: `Internal Pilot Ready`.
 - Degraded audit: `Not Ready`.
