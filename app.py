@@ -7,10 +7,11 @@ from pathlib import Path
 import streamlit as st
 
 from eval.run_eval import run_evaluation
-from src.answer import AnswerResult, answer_question
+from src.answer import AnswerResult
 from src.audit import CORE_METRICS, METRIC_LABELS
 from src.compare import compare_documents, write_reports as write_change_reports
 from src.ingest import DEFAULT_INDEX_PATH, PROJECT_ROOT
+from src.session import AnswerSession
 
 
 def _project_path(value: str) -> Path:
@@ -220,7 +221,14 @@ with ask_tab:
     retriever = st.selectbox(
         "Retriever", ("lexical", "dense", "hybrid"), index=2
     )
-    if st.button("Ask", type="primary", key="ask_button"):
+    ask_column, clear_column = st.columns([1, 1])
+    ask_clicked = ask_column.button("Ask", type="primary", key="ask_button")
+    clear_clicked = clear_column.button("Clear session", key="clear_session_button")
+    if clear_clicked:
+        st.session_state.pop("answer_session", None)
+        st.session_state.pop("answer_result", None)
+        st.session_state.pop("question_resolution", None)
+    if ask_clicked:
         if not question.strip():
             st.warning("Enter a question.")
         elif not DEFAULT_INDEX_PATH.exists():
@@ -228,12 +236,19 @@ with ask_tab:
         else:
             try:
                 with st.spinner("Retrieving evidence and checking groundedness..."):
-                    st.session_state["answer_result"] = answer_question(
-                        question.strip(), retriever=retriever
-                    )
+                    session = st.session_state.get("answer_session")
+                    if session is None or session.retriever != retriever:
+                        session = AnswerSession(retriever=retriever)
+                        st.session_state["answer_session"] = session
+                    turn = session.ask(question.strip())
+                    st.session_state["answer_result"] = turn.answer
+                    st.session_state["question_resolution"] = turn
             except Exception as error:
                 st.error(f"Ask Mode failed: {error}")
     if "answer_result" in st.session_state:
+        turn = st.session_state.get("question_resolution")
+        if turn and turn.original_question != turn.resolved_question:
+            st.caption(f"Resolved follow-up: {turn.resolved_question}")
         _render_answer(st.session_state["answer_result"])
 
 with readiness_tab:
