@@ -30,12 +30,14 @@ cannot be released unless the deterministic validator accepts its citations,
 provenance, and groundedness. Deterministic fake providers demonstrate both the
 allowed and blocked paths without credentials.
 
-Ask Mode applies a small deterministic guard before retrieval. Standalone greetings,
+Ask Mode applies a small deterministic router before retrieval. Standalone greetings,
 thanks, empty input, and app-introduction questions return a canned capability message
-with `response_type=non_kb_chitchat`; these responses do not retrieve evidence, call an
-LLM provider, or require citations. The guard is an exact normalized allowlist, so
-policy, support, and other factual questions still use retrieval and the existing
-validator path.
+with `response_type=non_kb_chitchat`. Clearly unrelated general questions such as
+weather, trivia, recipes, sports, or creative requests return a canned scope refusal
+with `response_type=out_of_scope_general`. Neither response retrieves evidence, calls
+an LLM provider, requires citations, or enters readiness metrics. Explicit company,
+support, policy, pricing, and service signals always take the existing retrieval and
+validator path; ambiguous queries default to that path as well.
 
 ## Quickstart
 
@@ -234,7 +236,7 @@ python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compa
 
 Frozen reviewer baseline:
 
-- 57 deterministic tests pass; optional MiniMax live tests skip without a key.
+- 61 deterministic tests pass; optional MiniMax live tests skip without a key.
 - Ask Mode gate: `PASS`.
 - Healthy audit: `Internal Pilot Ready`.
 - Degraded audit: `Not Ready`.

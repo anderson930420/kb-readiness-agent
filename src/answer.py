@@ -44,7 +44,9 @@ SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s*")
 Confidence = Literal["high", "medium", "low"]
 AnswerMode = Literal["extractive", "generative"]
 ValidatorDecision = Literal["not_run", "allowed", "blocked"]
-ResponseType = Literal["kb_answer", "non_kb_chitchat"]
+ResponseType = Literal[
+    "kb_answer", "non_kb_chitchat", "out_of_scope_general"
+]
 
 NON_KB_EDGE_PUNCTUATION = " \t\r\n!?.,，。！？、~～:：;；"
 NON_KB_EXACT_QUERIES = frozenset(
@@ -108,6 +110,67 @@ NON_KB_EXACT_QUERIES = frozenset(
         "請介紹一下你自己",
         "你是誰",
     }
+)
+KB_SCOPE_EN_RE = re.compile(
+    r"\b(?:account|api|billing|business|company|contract|customer|discount|"
+    r"enterprise|invoice|migration|onboarding|payment|plan|plans|policy|policies|"
+    r"pricing|privacy|product|quote|refund|renewal|sales|security|service|services|"
+    r"sla|subscription|support|ticket)\b",
+    re.IGNORECASE,
+)
+KB_SCOPE_ZH_TERMS = (
+    "公司",
+    "企業",
+    "客戶",
+    "客服",
+    "支援",
+    "政策",
+    "定價",
+    "價格",
+    "報價",
+    "服務",
+    "產品",
+    "方案",
+    "訂閱",
+    "帳號",
+    "帳戶",
+    "付款",
+    "退款",
+    "退費",
+    "續約",
+    "發票",
+    "合約",
+    "隱私",
+    "資料",
+    "安全",
+    "導入",
+    "移轉",
+    "工單",
+    "業務",
+)
+OUT_OF_SCOPE_GENERAL_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(?:weather|weather forecast|temperature)\b",
+        r"\b(?:capital of|president of|prime minister of)\b",
+        r"\b(?:recipe|cook|bake|ingredients for)\b",
+        r"\b(?:football|soccer|basketball|baseball|tennis|cricket|nba|nfl|mlb|nhl|sports score)\b",
+        r"\b(?:tell me (?:a )?joke|write (?:me )?(?:a )?(?:poem|story|song)|horoscope)\b",
+        r"\b(?:translate|translation)\b",
+        r"\b(?:calculate|solve (?:this )?(?:math|equation)|what is \d+\s*[-+*/^])\b",
+        r"\b(?:current news|latest news|news headlines?)\b",
+        r"\b(?:what time is it|what(?:'s| is) (?:today's date|the date today))\b",
+        r"^what is (?:python|javascript|photosynthesis|quantum physics|gravity)\??$",
+        r"(?:天氣|氣溫|氣象預報)",
+        r"(?:哪一國的首都|的首都是|總統是誰|總理是誰)",
+        r"(?:食譜|怎麼煮|怎麼烤|如何烹飪)",
+        r"(?:足球|籃球|棒球|網球|球賽|比賽比分)",
+        r"(?:講.*笑話|寫.*(?:詩|故事|歌曲)|星座運勢)",
+        r"(?:翻譯成|幫我翻譯)",
+        r"(?:計算|解這個方程式|數學題)",
+        r"(?:最新新聞|今日新聞|新聞頭條)",
+        r"(?:現在幾點|今天幾月幾號|今天日期)",
+    )
 )
 
 
@@ -185,6 +248,25 @@ def is_non_kb_chitchat(question: str) -> bool:
     return not normalized or normalized in NON_KB_EXACT_QUERIES
 
 
+def classify_query(question: str) -> ResponseType:
+    """Route only clearly identified non-KB queries away from retrieval."""
+
+    normalized = _normalize_non_kb_query(question)
+    if not normalized or normalized in NON_KB_EXACT_QUERIES:
+        return "non_kb_chitchat"
+    if KB_SCOPE_EN_RE.search(normalized) or any(
+        term in normalized for term in KB_SCOPE_ZH_TERMS
+    ):
+        return "kb_answer"
+    if any(pattern.search(normalized) for pattern in OUT_OF_SCOPE_GENERAL_PATTERNS):
+        return "out_of_scope_general"
+    return "kb_answer"
+
+
+def uses_kb_pipeline(question: str) -> bool:
+    return classify_query(question) == "kb_answer"
+
+
 def _non_kb_message(question: str) -> str:
     if _is_chinese(question):
         return (
@@ -198,21 +280,41 @@ def _non_kb_message(question: str) -> str:
     )
 
 
-def _non_kb_result(
+def _out_of_scope_message(question: str) -> str:
+    if _is_chinese(question):
+        return (
+            "此應用程式僅處理與公司知識庫相關的客服、政策、定價和服務問題，"
+            "無法回答無關的一般問題。請改問知識庫範圍內的問題。"
+        )
+    return (
+        "This app only handles company knowledge-base questions about support, "
+        "policy, pricing, and services. It cannot answer unrelated general "
+        "questions. Please ask a question within the KB scope."
+    )
+
+
+def _canned_result(
     question: str,
     *,
     retriever: RetrieverName,
     mode: AnswerMode,
     latency_ms: float,
+    response_type: Literal["non_kb_chitchat", "out_of_scope_general"],
 ) -> AnswerResult:
     """Build a canned response without invoking retrieval or any validator."""
+
+    out_of_scope = response_type == "out_of_scope_general"
 
     return AnswerResult(
         question=question,
         retriever=retriever,
-        answer=_non_kb_message(question),
-        refused=False,
-        refusal_reason=None,
+        answer=(
+            _out_of_scope_message(question)
+            if out_of_scope
+            else _non_kb_message(question)
+        ),
+        refused=out_of_scope,
+        refusal_reason="out_of_scope_general" if out_of_scope else None,
         requires_human_review=False,
         confidence="high",
         citations=[],
@@ -231,7 +333,7 @@ def _non_kb_result(
         latency_ms=round(latency_ms, 3),
         answer_mode=mode,
         validator_decision="not_run",
-        response_type="non_kb_chitchat",
+        response_type=response_type,
     )
 
 
@@ -622,12 +724,14 @@ def answer_question(
     generation_fail_fast: bool = False,
 ) -> AnswerResult:
     started = perf_counter()
-    if is_non_kb_chitchat(question):
-        return _non_kb_result(
+    response_type = classify_query(question)
+    if response_type != "kb_answer":
+        return _canned_result(
             question,
             retriever=retriever,
             mode=mode,
             latency_ms=(perf_counter() - started) * 1000,
+            response_type=response_type,
         )
 
     results = retrieve(
@@ -896,7 +1000,7 @@ def main() -> None:
     if (
         args.mode == "generative"
         and args.llm_provider is None
-        and not is_non_kb_chitchat(args.question)
+        and uses_kb_pipeline(args.question)
     ):
         parser.error("--llm-provider is required when --mode generative")
 

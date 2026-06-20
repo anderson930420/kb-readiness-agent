@@ -8,7 +8,7 @@ from pathlib import Path
 import streamlit as st
 
 from eval.run_eval import run_evaluation
-from src.answer import AnswerResult, is_non_kb_chitchat
+from src.answer import AnswerResult, classify_query
 from src.audit import CORE_METRICS, METRIC_LABELS
 from src.compare import compare_documents, write_reports as write_change_reports
 from src.ingest import DEFAULT_INDEX_PATH, PROJECT_ROOT
@@ -28,7 +28,14 @@ def _ratio(metric: dict[str, int]) -> str:
 
 def _render_answer(result: AnswerResult) -> None:
     st.subheader("Validator verdict")
-    if result.response_type == "non_kb_chitchat":
+    if result.response_type == "out_of_scope_general":
+        st.markdown(
+            '<span style="display:inline-block;padding:0.2rem 0.55rem;'
+            'border-radius:0.5rem;background:#e5e7eb;color:#374151;'
+            'font-size:0.85rem;font-weight:600">Out of scope</span>',
+            unsafe_allow_html=True,
+        )
+    elif result.response_type == "non_kb_chitchat":
         st.info("Not run — deterministic non-KB response")
     elif result.answer_mode == "extractive":
         st.info("Not run — extractive answer mode")
@@ -274,13 +281,14 @@ with ask_tab:
                 "the Streamlit environment or select `fake_hallucination`; no "
                 "request was made."
             )
-    non_kb_chitchat = is_non_kb_chitchat(question)
+    response_type = classify_query(question)
+    canned_response = response_type != "kb_answer"
     ask_column, clear_column = st.columns([1, 1])
     ask_clicked = ask_column.button(
         "Ask",
         type="primary",
         key="ask_button",
-        disabled=minimax_key_missing and not non_kb_chitchat,
+        disabled=minimax_key_missing and not canned_response,
     )
     clear_clicked = clear_column.button("Clear session", key="clear_session_button")
     if clear_clicked:
@@ -288,13 +296,13 @@ with ask_tab:
         st.session_state.pop("answer_result", None)
         st.session_state.pop("question_resolution", None)
     if ask_clicked:
-        if not non_kb_chitchat and not DEFAULT_INDEX_PATH.exists():
+        if not canned_response and not DEFAULT_INDEX_PATH.exists():
             st.error("Index not found. Run `python -m src.ingest` first.")
         else:
             try:
                 spinner_text = (
                     "Preparing deterministic response..."
-                    if non_kb_chitchat
+                    if canned_response
                     else "Retrieving evidence and checking groundedness..."
                 )
                 with st.spinner(spinner_text):

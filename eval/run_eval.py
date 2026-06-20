@@ -8,7 +8,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Iterable
 
-from src.answer import answer_from_retrieved
+from src.answer import answer_from_retrieved, uses_kb_pipeline
 from src.audit import (
     DEFAULT_REPORT_DIR,
     build_case_evaluation,
@@ -30,6 +30,22 @@ from src.retrieve import (
 
 
 DEFAULT_EVAL_PATH = PROJECT_ROOT / "eval" / "eval_set.jsonl"
+
+
+def split_non_kb_eval_cases(rows: Iterable[dict]) -> tuple[list[dict], list[dict]]:
+    """Exclude rows whose populated questions are all outside the KB pipeline."""
+
+    included: list[dict] = []
+    excluded: list[dict] = []
+    for row in rows:
+        questions = [
+            row.get(field) for field in ("question", "question_en") if row.get(field)
+        ]
+        if questions and all(not uses_kb_pipeline(question) for question in questions):
+            excluded.append(row)
+        else:
+            included.append(row)
+    return included, excluded
 
 
 def _ratio(values: list[bool]) -> str:
@@ -65,12 +81,14 @@ def run_evaluation(
 
     all_rows = load_eval_cases(eval_path)
     active_rows, excluded_rows = split_eval_cases(all_rows)
-    rows = active_rows[:limit] if limit is not None else active_rows
+    metric_rows, excluded_non_kb_rows = split_non_kb_eval_cases(active_rows)
+    rows = metric_rows[:limit] if limit is not None else metric_rows
 
     if emit_output:
         print(f"Total eval cases: {len(all_rows)}")
-        print(f"Included active Ask Mode cases: {len(active_rows)}")
+        print(f"Included active KB Ask Mode cases: {len(metric_rows)}")
         print(f"Excluded P2 conflict/change cases: {len(excluded_rows)}")
+        print(f"Excluded non-KB cases: {len(excluded_non_kb_rows)}")
         if limit is not None:
             print(f"Cases executed due to --limit: {len(rows)}")
 
@@ -109,6 +127,8 @@ def run_evaluation(
         )
         for language, question in questions:
             if not question:
+                continue
+            if not uses_kb_pipeline(question):
                 continue
             for method in selected:
                 started = perf_counter()
@@ -205,7 +225,7 @@ def run_evaluation(
         metrics = build_metrics(
             retriever=selected[0],
             top_k=top_k,
-            all_cases=all_rows,
+            all_cases=[*metric_rows, *excluded_rows],
             records=report_records,
         )
         metrics_path, report_path = write_reports(metrics, report_dir)
@@ -225,6 +245,7 @@ def run_evaluation(
         "metrics": metrics,
         "metrics_path": metrics_path,
         "report_path": report_path,
+        "excluded_non_kb_cases": excluded_non_kb_rows,
     }
 
 

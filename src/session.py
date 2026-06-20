@@ -13,7 +13,7 @@ from .answer import (
     AnswerResult,
     answer_question,
     format_answer,
-    is_non_kb_chitchat,
+    uses_kb_pipeline,
 )
 from .generation import LLM_PROVIDERS, LLMProvider
 from .ingest import DEFAULT_INDEX_PATH
@@ -182,7 +182,7 @@ def main() -> None:
     if (
         args.mode == "generative"
         and args.llm_provider is None
-        and any(not is_non_kb_chitchat(question) for question in args.questions)
+        and any(uses_kb_pipeline(question) for question in args.questions)
     ):
         parser.error("--llm-provider is required when --mode generative")
 
