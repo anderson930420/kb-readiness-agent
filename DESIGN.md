@@ -377,7 +377,7 @@ answer/JSON contract、groundedness、citation provenance、medical refund refus
 query-scoped conflict warning、metrics schema、P2 scope isolation、readiness recommendation、
 report rendering，以及 Markdown/PDF parsing、page metadata、large-document alignment、
 refund-window risk、eval impact、KB update 與 Change Impact report generation。
-Current no-key validation: 70 deterministic pytest tests pass. Optional MiniMax live tests are key-gated and skip when MINIMAX_API_KEY is not configured.
+Current no-key validation: 65 deterministic pytest tests pass; 5 optional MiniMax live tests are key-gated and skip when `MINIMAX_API_KEY` is not set (70 total; all pass when a key is configured).
 
 ---
 
@@ -435,6 +435,7 @@ Current no-key validation: 70 deterministic pytest tests pass. Optional MiniMax 
 - 模型與 embedding 計算在本機執行；首次使用預設模型通常需要下載模型檔。系統目前不會把
   support corpus 傳送給 API-based LLM；只有明確選擇 generative MiniMax / OpenAI /
   Anthropic provider 時，retrieved chunks 才會連同問題送往該 provider。
+- PyMuPDF 在 Python 3.14 下會發出無害的 SWIG DeprecationWarning（SwigPyObject / SwigPyPacked / swigvarlink），源自上游 C 綁定、與測試邏輯及結果無關。
 
 ---
 

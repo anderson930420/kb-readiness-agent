@@ -264,7 +264,7 @@ python -m scripts.build_custom_pdf_fixtures
 
 Frozen reviewer baseline:
 
-- Current no-key validation: 70 deterministic pytest tests pass. Optional MiniMax live tests are key-gated and skip when MINIMAX_API_KEY is not configured.
+- Current no-key validation: 65 deterministic pytest tests pass; 5 optional MiniMax live tests are key-gated and skip when `MINIMAX_API_KEY` is not set (70 total; all pass when a key is configured).
 - Ask Mode gate: `PASS`.
 - Healthy audit: `Internal Pilot Ready`.
 - Degraded audit: `Not Ready`.
