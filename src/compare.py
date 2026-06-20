@@ -100,6 +100,9 @@ RELATED_EVAL_SECTIONS: dict[str, set[str]] = {
     "digital_services": {"digital_services", "onboarding_fees"},
     "refund_processing_time": {"refund_processing_time"},
     "unsupported_exceptions": {"unsupported_exceptions", "refund_escalation"},
+    "enterprise_support_response_time": {"enterprise_support_response_time"},
+    "data_deletion": {"data_deletion"},
+    "refund_escalation": {"refund_escalation", "unsupported_exceptions"},
 }
 SECTION_IMPACT_TERMS: dict[str, tuple[str, ...]] = {
     "standard_refund_window": (
@@ -114,6 +117,14 @@ SECTION_IMPACT_TERMS: dict[str, tuple[str, ...]] = {
     "digital_services": ("導入服務", "資料移轉", "onboarding services", "migration services"),
     "refund_processing_time": ("退款處理時間", "完成處理", "processing takes", "business days"),
     "unsupported_exceptions": ("醫療因素", "困難情境", "medical reasons", "hardship"),
+    "enterprise_support_response_time": (
+        "support sla",
+        "response time",
+        "initial response",
+        "支援回覆時間",
+    ),
+    "data_deletion": ("data deletion", "deletion request", "資料刪除"),
+    "refund_escalation": ("escalation", "escalate", "升級", "轉交"),
 }
 RELATED_KB_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "enterprise_refunds": (
@@ -122,6 +133,12 @@ RELATED_KB_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     ),
     "digital_services": (("onboarding_guide.md", "onboarding_fees"),),
     "unsupported_exceptions": (("support_escalation_sop.md", "refund_escalation"),),
+    "enterprise_support_response_time": (
+        ("enterprise_plan_faq.md", "enterprise_support_response_time"),
+        ("support_escalation_sop.md", "sla_escalation"),
+    ),
+    "data_deletion": (("privacy_policy.md", "data_deletion"),),
+    "refund_escalation": (("support_escalation_sop.md", "refund_escalation"),),
 }
 
 
@@ -288,6 +305,10 @@ def classify_severity(change: dict) -> tuple[str, list[str]]:
         "automatic_manual_review_changed": "automatic handling changed to manual review",
         "manual_review_requirement_added": "a new manual-review requirement was added",
         "non_refundable_category_added": "non-refundable scope was added",
+        "sla_response_time_changed": "a contractual support SLA response time changed",
+        "data_deletion_timeline_changed": "the data-deletion completion timeline changed",
+        "refund_exception_removed": "an existing refund exception was removed",
+        "escalation_rule_added": "a new mandatory escalation rule was added",
     }
     medium_signals = {
         "processing_time_changed": "processing time changed",
@@ -348,6 +369,17 @@ def detect_policy_changes(alignments: list[dict]) -> list[dict]:
         new_exception = _contains(new_text, EXCEPTION_TERMS)
         old_escalation = _contains(old_text, ESCALATION_TERMS)
         new_escalation = _contains(new_text, ESCALATION_TERMS)
+        sla_context = (
+            "support_response_time" in slug
+            or "support_sla" in slug
+            or _contains(heading, ("support sla", "response time", "支援回覆時間"))
+        )
+        data_deletion_context = "data_deletion" in slug or _contains(
+            heading, ("data deletion", "資料刪除")
+        )
+        escalation_rule_context = "escalation" in slug or _contains(
+            heading, ("escalation rules", "升級規則")
+        )
 
         change = {
             "id": f"change-{len(changes) + 1:03d}",
@@ -386,6 +418,14 @@ def detect_policy_changes(alignments: list[dict]) -> list[dict]:
             "exception_language_removed": old_exception and not new_exception,
             "processing_time_changed": processing_context and numeric_changed,
             "escalation_path_changed": old_escalation != new_escalation,
+            "sla_response_time_changed": sla_context and numeric_changed,
+            "data_deletion_timeline_changed": data_deletion_context and numeric_changed,
+            "refund_exception_removed": refund_context
+            and old_exception
+            and not new_exception,
+            "escalation_rule_added": escalation_rule_context
+            and new_escalation
+            and not old_escalation,
         }
         severity, severity_reasons = classify_severity(change)
         change["severity"] = severity
@@ -402,6 +442,10 @@ def detect_policy_changes(alignments: list[dict]) -> list[dict]:
                 "exception_language_removed",
                 "processing_time_changed",
                 "escalation_path_changed",
+                "sla_response_time_changed",
+                "data_deletion_timeline_changed",
+                "refund_exception_removed",
+                "escalation_rule_added",
             )
             if change[key]
         ] or ["wording_changed"]
@@ -438,6 +482,10 @@ def _impact_action(row: dict, matched_changes: list[dict]) -> str:
         or change["eligibility_changed"]
         or change["processing_time_changed"]
         or change["non_refundable_category_added"]
+        or change.get("sla_response_time_changed")
+        or change.get("data_deletion_timeline_changed")
+        or change.get("refund_exception_removed")
+        or change.get("escalation_rule_added")
         for change in matched_changes
     ):
         return "update_expected_answer"

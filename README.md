@@ -184,6 +184,29 @@ changes, 13 impacted eval cases, and 9 required KB updates. Reports are written 
 `data/reports/change_impact.json` and
 `data/reports/change_impact_report.md` unless another output directory is selected.
 
+### Custom support-contract upload fixture
+
+Generate the separate 50-page old/new pair used to exercise custom uploads:
+
+```bash
+python -m scripts.build_custom_pdf_fixtures
+```
+
+This writes:
+
+- `compare_docs/custom_old_support_contract.pdf`
+- `compare_docs/custom_new_support_contract.pdf`
+
+The generated PDFs are intentionally gitignored. Each PDF contains repeated headers,
+footers, visible page numbers, and the same section layout. The new contract changes
+the Support SLA from 24 hours to 4 hours, removes a refund exception, requires manual
+Enterprise refund review, changes data deletion from 30 days to 14 days, and adds a
+mandatory escalation rule.
+
+Start Streamlit, open **Change Impact**, select **Upload custom documents**, and upload
+the old and new files in their respective fields. The expected deterministic result is
+5 changed sections, 5 high-risk changes, required KB updates, and human review required.
+
 ## Architecture and evidence contracts
 
 ```text
@@ -235,6 +258,7 @@ python -m eval.run_eval --retriever hybrid --write-report
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
 python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
 python -m src.compare --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --write-report
+python -m scripts.build_custom_pdf_fixtures
 ./scripts/demo.sh
 ```
 

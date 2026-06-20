@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.DS_Store
 
 
 data/index/*.jsonl
@@ -15,3 +16,4 @@ data/logs/*
 data/reports/
 data/degraded/
 compare_docs/large_*_refund_policy.pdf
+compare_docs/custom_*_support_contract.pdf
