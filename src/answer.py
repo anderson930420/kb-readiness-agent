@@ -161,6 +161,7 @@ OUT_OF_SCOPE_GENERAL_PATTERNS = tuple(
         r"\b(?:current news|latest news|news headlines?)\b",
         r"\b(?:what time is it|what(?:'s| is) (?:today's date|the date today))\b",
         r"^what is (?:python|javascript|photosynthesis|quantum physics|gravity)\??$",
+        r"^(?:who am i|what is my name|do you know me|what is my identity)$",
         r"(?:天氣|氣溫|氣象預報)",
         r"(?:哪一國的首都|的首都是|總統是誰|總理是誰)",
         r"(?:食譜|怎麼煮|怎麼烤|如何烹飪)",
@@ -170,6 +171,7 @@ OUT_OF_SCOPE_GENERAL_PATTERNS = tuple(
         r"(?:計算|解這個方程式|數學題)",
         r"(?:最新新聞|今日新聞|新聞頭條)",
         r"(?:現在幾點|今天幾月幾號|今天日期)",
+        r"^(?:我是誰|我叫什麼|你知道我是誰嗎|你認識我嗎)$",
     )
 )
 
@@ -281,15 +283,11 @@ def _non_kb_message(question: str) -> str:
 
 
 def _out_of_scope_message(question: str) -> str:
-    if _is_chinese(question):
-        return (
-            "此應用程式僅處理與公司知識庫相關的客服、政策、定價和服務問題，"
-            "無法回答無關的一般問題。請改問知識庫範圍內的問題。"
-        )
     return (
-        "This app only handles company knowledge-base questions about support, "
-        "policy, pricing, and services. It cannot answer unrelated general "
-        "questions. Please ask a question within the KB scope."
+        "This Ask Mode is scoped to the indexed support knowledge base. I can help "
+        "with grounded KB questions about refunds, pricing, Enterprise plans, "
+        "privacy, onboarding, SLA, support escalation, readiness audit, and policy "
+        "change impact. Your question is outside this demo's task boundary."
     )
 
 

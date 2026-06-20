@@ -27,17 +27,16 @@ def _ratio(metric: dict[str, int]) -> str:
 
 
 def _render_answer(result: AnswerResult) -> None:
-    st.subheader("Validator verdict")
     if result.response_type == "out_of_scope_general":
-        st.markdown(
-            '<span style="display:inline-block;padding:0.2rem 0.55rem;'
-            'border-radius:0.5rem;background:#e5e7eb;color:#374151;'
-            'font-size:0.85rem;font-weight:600">Out of scope</span>',
-            unsafe_allow_html=True,
-        )
-    elif result.response_type == "non_kb_chitchat":
-        st.info("Not run — deterministic non-KB response")
-    elif result.answer_mode == "extractive":
+        st.info(result.answer)
+        return
+
+    if result.response_type == "non_kb_chitchat":
+        st.write(result.answer)
+        return
+
+    st.subheader("Validator verdict")
+    if result.answer_mode == "extractive":
         st.info("Not run — extractive answer mode")
     elif result.validator_decision == "allowed":
         st.success("✓ Generated answer supported and safe")

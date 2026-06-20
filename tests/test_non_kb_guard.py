@@ -83,6 +83,45 @@ class NonKBQueryGuardTests(unittest.TestCase):
         retrieve.assert_not_called()
         generate.assert_not_called()
 
+    def test_identity_queries_use_existing_out_of_scope_response(self) -> None:
+        expected_answer = (
+            "This Ask Mode is scoped to the indexed support knowledge base. I can "
+            "help with grounded KB questions about refunds, pricing, Enterprise "
+            "plans, privacy, onboarding, SLA, support escalation, readiness audit, "
+            "and policy change impact. Your question is outside this demo's task "
+            "boundary."
+        )
+        queries = (
+            "我是誰",
+            "我叫什麼",
+            "你知道我是誰嗎",
+            "你認識我嗎",
+            "who am I",
+            "what is my name",
+            "do you know me",
+            "what is my identity",
+        )
+
+        with patch("src.answer.retrieve") as retrieve, patch(
+            "src.answer.generate_answer"
+        ) as generate, patch("src.answer._generate_and_validate") as validate:
+            for query in queries:
+                with self.subTest(query=query):
+                    result = answer_question(query, mode="generative")
+
+                    self.assertEqual(result.response_type, "out_of_scope_general")
+                    self.assertEqual(result.answer, expected_answer)
+                    self.assertEqual(result.citations, [])
+                    self.assertEqual(result.retrieved_chunks, [])
+                    self.assertEqual(result.validator_decision, "not_run")
+                    self.assertEqual(result.groundedness["status"], "not_applicable")
+                    self.assertFalse(result.requires_human_review)
+                    self.assertIsNone(result.blocked_generated_answer)
+
+        retrieve.assert_not_called()
+        generate.assert_not_called()
+        validate.assert_not_called()
+
     def test_business_scope_signals_always_use_kb_pipeline(self) -> None:
         queries = (
             "What is your refund policy?",
