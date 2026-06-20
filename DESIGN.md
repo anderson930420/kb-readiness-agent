@@ -377,7 +377,7 @@ answer/JSON contract、groundedness、citation provenance、medical refund refus
 query-scoped conflict warning、metrics schema、P2 scope isolation、readiness recommendation、
 report rendering，以及 Markdown/PDF parsing、page metadata、large-document alignment、
 refund-window risk、eval impact、KB update 與 Change Impact report generation。
-Frozen reviewer baseline 共 49 tests。
+Current no-key validation: 70 deterministic pytest tests pass. Optional MiniMax live tests are key-gated and skip when MINIMAX_API_KEY is not configured.
 
 ---
 
