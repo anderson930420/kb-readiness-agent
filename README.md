@@ -1,5 +1,7 @@
 # AI Support KB Readiness Agent
 
+> 繁體中文版本：[README.zh-TW.md](README.zh-TW.md)
+
 A Streamlit-based RAG readiness and reliability audit tool for enterprise support
 knowledge bases.
 
