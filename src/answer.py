@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import unicodedata
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import perf_counter
@@ -43,6 +44,71 @@ SENTENCE_SPLIT_RE = re.compile(r"(?<=[。！？.!?])\s*")
 Confidence = Literal["high", "medium", "low"]
 AnswerMode = Literal["extractive", "generative"]
 ValidatorDecision = Literal["not_run", "allowed", "blocked"]
+ResponseType = Literal["kb_answer", "non_kb_chitchat"]
+
+NON_KB_EDGE_PUNCTUATION = " \t\r\n!?.,，。！？、~～:：;；"
+NON_KB_EXACT_QUERIES = frozenset(
+    {
+        # Greetings.
+        "hi",
+        "hi there",
+        "hello",
+        "hello there",
+        "hey",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "你好",
+        "您好",
+        "嗨",
+        "哈囉",
+        "哈啰",
+        # Thanks.
+        "thanks",
+        "thank you",
+        "thank you very much",
+        "thanks a lot",
+        "thanks for your help",
+        "thx",
+        "謝謝",
+        "感謝",
+        "多謝",
+        # App introductions and capabilities.
+        "what can you do",
+        "what can this app do",
+        "what do you do",
+        "what does this app do",
+        "how can you help",
+        "how do i use this app",
+        "what is this app",
+        "what is the kb readiness agent",
+        "tell me about this app",
+        "tell me about the kb readiness agent",
+        "tell me what you can do",
+        "what are your capabilities",
+        "introduce yourself",
+        "who are you",
+        "你可以做什麼",
+        "你能做什麼",
+        "你會做什麼",
+        "你可以幫我什麼",
+        "這個應用程式可以做什麼",
+        "這個應用程式是做什麼的",
+        "這個應用可以做什麼",
+        "這個app可以做什麼",
+        "這個app是做什麼的",
+        "這個app能做什麼",
+        "這個 app 可以做什麼",
+        "這個 app 是做什麼的",
+        "這個 app 能做什麼",
+        "這個工具可以做什麼",
+        "這是什麼",
+        "如何使用這個應用程式",
+        "請介紹這個應用程式",
+        "請介紹一下你自己",
+        "你是誰",
+    }
+)
 
 
 class Citation(TypedDict):
@@ -63,7 +129,7 @@ class GroundednessChecks(TypedDict):
 
 
 class GroundednessResult(TypedDict):
-    status: Literal["supported", "unsupported"]
+    status: Literal["supported", "unsupported", "not_applicable"]
     checks: GroundednessChecks
     unsupported_claims: list[str]
 
@@ -86,6 +152,7 @@ class AnswerResult:
     validator_decision: ValidatorDecision = "not_run"
     generation_trace: dict[str, object] | None = None
     blocked_generated_answer: str | None = None
+    response_type: ResponseType = "kb_answer"
 
     @property
     def text(self) -> str:
@@ -103,6 +170,69 @@ Answer = AnswerResult
 
 def _is_chinese(question: str) -> bool:
     return bool(CJK_RE.search(question))
+
+
+def _normalize_non_kb_query(question: str) -> str:
+    normalized = unicodedata.normalize("NFKC", question).casefold()
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized.strip(NON_KB_EDGE_PUNCTUATION)
+
+
+def is_non_kb_chitchat(question: str) -> bool:
+    """Match only a small allowlist of standalone, non-factual interactions."""
+
+    normalized = _normalize_non_kb_query(question)
+    return not normalized or normalized in NON_KB_EXACT_QUERIES
+
+
+def _non_kb_message(question: str) -> str:
+    if _is_chinese(question):
+        return (
+            "你好！我可以根據此應用程式的知識庫回答政策與客服問題、"
+            "稽核知識庫就緒度，並分析政策變更。請輸入政策或客服問題。"
+        )
+    return (
+        "Hello! I can answer policy and support questions grounded in this app's "
+        "knowledge base, audit KB readiness, and analyze policy changes. Ask a "
+        "policy or support question to get started."
+    )
+
+
+def _non_kb_result(
+    question: str,
+    *,
+    retriever: RetrieverName,
+    mode: AnswerMode,
+    latency_ms: float,
+) -> AnswerResult:
+    """Build a canned response without invoking retrieval or any validator."""
+
+    return AnswerResult(
+        question=question,
+        retriever=retriever,
+        answer=_non_kb_message(question),
+        refused=False,
+        refusal_reason=None,
+        requires_human_review=False,
+        confidence="high",
+        citations=[],
+        retrieved_chunks=[],
+        groundedness={
+            "status": "not_applicable",
+            "checks": {
+                "has_citation": False,
+                "citations_from_retrieved_chunks": True,
+                "numeric_claims_supported": True,
+                "refusal_supported": True,
+            },
+            "unsupported_claims": [],
+        },
+        warnings=[],
+        latency_ms=round(latency_ms, 3),
+        answer_mode=mode,
+        validator_decision="not_run",
+        response_type="non_kb_chitchat",
+    )
 
 
 def _generic_refusal(question: str) -> str:
@@ -492,6 +622,14 @@ def answer_question(
     generation_fail_fast: bool = False,
 ) -> AnswerResult:
     started = perf_counter()
+    if is_non_kb_chitchat(question):
+        return _non_kb_result(
+            question,
+            retriever=retriever,
+            mode=mode,
+            latency_ms=(perf_counter() - started) * 1000,
+        )
+
     results = retrieve(
         question,
         top_k=top_k,
@@ -700,6 +838,7 @@ def format_answer(result: AnswerResult) -> str:
         "Answer draft:",
         result.answer,
         "",
+        f"Response type: {result.response_type}",
         f"Answer mode: {result.answer_mode}",
         f"Generation validator: {result.validator_decision}",
         f"Retriever: {result.retriever}",
@@ -754,7 +893,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.mode == "generative" and args.llm_provider is None:
+    if (
+        args.mode == "generative"
+        and args.llm_provider is None
+        and not is_non_kb_chitchat(args.question)
+    ):
         parser.error("--llm-provider is required when --mode generative")
 
     result = answer_question(

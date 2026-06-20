@@ -8,7 +8,7 @@ from pathlib import Path
 import streamlit as st
 
 from eval.run_eval import run_evaluation
-from src.answer import AnswerResult
+from src.answer import AnswerResult, is_non_kb_chitchat
 from src.audit import CORE_METRICS, METRIC_LABELS
 from src.compare import compare_documents, write_reports as write_change_reports
 from src.ingest import DEFAULT_INDEX_PATH, PROJECT_ROOT
@@ -28,7 +28,9 @@ def _ratio(metric: dict[str, int]) -> str:
 
 def _render_answer(result: AnswerResult) -> None:
     st.subheader("Validator verdict")
-    if result.answer_mode == "extractive":
+    if result.response_type == "non_kb_chitchat":
+        st.info("Not run — deterministic non-KB response")
+    elif result.answer_mode == "extractive":
         st.info("Not run — extractive answer mode")
     elif result.validator_decision == "allowed":
         st.success("✓ Generated answer supported and safe")
@@ -64,6 +66,8 @@ def _render_answer(result: AnswerResult) -> None:
     groundedness = result.groundedness["status"]
     if groundedness == "supported":
         st.success("Groundedness: supported")
+    elif groundedness == "not_applicable":
+        st.info("Groundedness: not applicable to non-KB response")
     else:
         st.error("Groundedness: unsupported")
     with st.expander("Groundedness checks"):
@@ -88,6 +92,8 @@ def _render_answer(result: AnswerResult) -> None:
         st.write(citation["text"])
 
     st.subheader("Retrieved chunks")
+    if not result.retrieved_chunks:
+        st.caption("None")
     for rank, chunk in enumerate(result.retrieved_chunks, start=1):
         label = (
             f"{rank}. {chunk['doc']} / {chunk['section_slug']} "
@@ -264,15 +270,17 @@ with ask_tab:
         )
         if minimax_key_missing:
             st.warning(
-                "MiniMax requires `MINIMAX_API_KEY`. Set it in the Streamlit "
-                "environment or select `fake_hallucination`; no request was made."
+                "MiniMax requires `MINIMAX_API_KEY` for KB questions. Set it in "
+                "the Streamlit environment or select `fake_hallucination`; no "
+                "request was made."
             )
+    non_kb_chitchat = is_non_kb_chitchat(question)
     ask_column, clear_column = st.columns([1, 1])
     ask_clicked = ask_column.button(
         "Ask",
         type="primary",
         key="ask_button",
-        disabled=minimax_key_missing,
+        disabled=minimax_key_missing and not non_kb_chitchat,
     )
     clear_clicked = clear_column.button("Clear session", key="clear_session_button")
     if clear_clicked:
@@ -280,13 +288,16 @@ with ask_tab:
         st.session_state.pop("answer_result", None)
         st.session_state.pop("question_resolution", None)
     if ask_clicked:
-        if not question.strip():
-            st.warning("Enter a question.")
-        elif not DEFAULT_INDEX_PATH.exists():
+        if not non_kb_chitchat and not DEFAULT_INDEX_PATH.exists():
             st.error("Index not found. Run `python -m src.ingest` first.")
         else:
             try:
-                with st.spinner("Retrieving evidence and checking groundedness..."):
+                spinner_text = (
+                    "Preparing deterministic response..."
+                    if non_kb_chitchat
+                    else "Retrieving evidence and checking groundedness..."
+                )
+                with st.spinner(spinner_text):
                     session = st.session_state.get("answer_session")
                     if (
                         session is None

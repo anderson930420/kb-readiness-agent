@@ -50,8 +50,10 @@ class Day3ReliabilityTests(unittest.TestCase):
                 "validator_decision",
                 "generation_trace",
                 "blocked_generated_answer",
+                "response_type",
             },
         )
+        self.assertEqual(result.response_type, "kb_answer")
         self.assertEqual(result.answer_mode, "extractive")
         self.assertEqual(result.validator_decision, "not_run")
         self.assertIsNone(result.generation_trace)

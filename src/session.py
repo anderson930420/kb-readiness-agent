@@ -8,7 +8,13 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .answer import AnswerMode, AnswerResult, answer_question, format_answer
+from .answer import (
+    AnswerMode,
+    AnswerResult,
+    answer_question,
+    format_answer,
+    is_non_kb_chitchat,
+)
 from .generation import LLM_PROVIDERS, LLMProvider
 from .ingest import DEFAULT_INDEX_PATH
 from .retrieve import (
@@ -173,7 +179,11 @@ def main() -> None:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    if args.mode == "generative" and args.llm_provider is None:
+    if (
+        args.mode == "generative"
+        and args.llm_provider is None
+        and any(not is_non_kb_chitchat(question) for question in args.questions)
+    ):
         parser.error("--llm-provider is required when --mode generative")
 
     session = AnswerSession(
