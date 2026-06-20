@@ -8,7 +8,13 @@ import fitz
 
 from scripts.build_large_pdf_fixture import build_large_pdf_fixtures
 from src.compare import compare_documents
-from src.document_loader import load_document, parse_pdf_sections
+from src.document_loader import (
+    DocumentParseError,
+    UnsupportedDocumentTypeError,
+    detect_document_type,
+    load_document,
+    parse_pdf_sections,
+)
 from src.ingest import PROJECT_ROOT
 
 
@@ -42,6 +48,40 @@ class PdfChangeImpactTests(unittest.TestCase):
         self.assertEqual(summary["impacted_eval_cases"], 13)
         self.assertEqual(summary["required_kb_updates"], 9)
 
+    def test_file_type_detection_accepts_upload_formats_case_insensitively(self) -> None:
+        self.assertEqual(detect_document_type("policy.PDF"), "pdf")
+        self.assertEqual(detect_document_type("policy.md"), "markdown")
+        self.assertEqual(detect_document_type("policy.MARKDOWN"), "markdown")
+        self.assertEqual(detect_document_type("policy.txt"), "text")
+
+        with self.assertRaisesRegex(
+            UnsupportedDocumentTypeError,
+            r"Unsupported document extension '\.docx'.*\.md, \.markdown, \.txt, \.pdf",
+        ):
+            detect_document_type("policy.docx")
+
+    def test_compare_two_temporary_markdown_upload_equivalents(self) -> None:
+        root = Path(self.temp_dir.name)
+        old_markdown = root / "uploaded_old.md"
+        new_markdown = root / "uploaded_new.md"
+        old_markdown.write_text(
+            "## Standard Refund Window (standard_refund_window)\n\n"
+            "Customers may request a refund within 14 days.\n",
+            encoding="utf-8",
+        )
+        new_markdown.write_text(
+            "## Standard Refund Window (standard_refund_window)\n\n"
+            "Customers may request a refund within 7 days.\n",
+            encoding="utf-8",
+        )
+
+        result = compare_documents(old_markdown, new_markdown)
+
+        self.assertEqual(result["summary"]["changed_sections"], 1)
+        self.assertEqual(result["summary"]["severity"]["high"], 1)
+        self.assertEqual(result["compared_documents"]["old_name"], "uploaded_old.md")
+        self.assertEqual(result["compared_documents"]["new_name"], "uploaded_new.md")
+
     def test_pdf_loader_extracts_sections_and_page_numbers(self) -> None:
         with fitz.open(self.old_pdf) as document:
             self.assertEqual(document.page_count, 50)
@@ -65,6 +105,15 @@ class PdfChangeImpactTests(unittest.TestCase):
         self.assertIn("14 days", standard["text"])
         self.assertEqual((added["page"], added["page_end"]), (2, 2))
         self.assertIn("medical reasons", added["text"])
+        self.assertTrue(
+            all(section["page"] == section["page_end"] for section in self.old_sections)
+        )
+        self.assertFalse(
+            any(
+                "KB Readiness Agent - Synthetic Refund Policy" in section["text"]
+                for section in self.old_sections
+            )
+        )
 
     def test_large_pdf_compare_detects_intended_changed_sections(self) -> None:
         changes = {change["section_slug"]: change for change in self.result["changes"]}
@@ -101,15 +150,32 @@ class PdfChangeImpactTests(unittest.TestCase):
         self.assertIn(("corpus/refund_policy.md", "standard_refund_window"), updates)
         self.assertIn(("corpus/support_escalation_sop.md", "refund_escalation"), updates)
 
+    def test_pdf_comparison_records_page_bounded_processing(self) -> None:
+        for side in ("old", "new"):
+            processing = self.result["document_processing"][side]
+            self.assertEqual(processing["strategy"], "page_by_page_section_chunks")
+            self.assertEqual(processing["page_count"], 50)
+            self.assertTrue(processing["page_bounded_units"])
+            self.assertFalse(processing["full_document_as_single_context"])
+
     def test_unsupported_extension_fails_clearly(self) -> None:
-        unsupported = Path(self.temp_dir.name) / "policy.txt"
+        unsupported = Path(self.temp_dir.name) / "policy.docx"
         unsupported.write_text("Policy text", encoding="utf-8")
 
         with self.assertRaisesRegex(
-            ValueError,
-            r"Unsupported document extension '\.txt'.*Supported extensions: \.md, \.markdown, \.pdf",
+            UnsupportedDocumentTypeError,
+            r"Unsupported document extension '\.docx'.*Supported extensions: \.md, \.markdown, \.txt, \.pdf",
         ):
             load_document(unsupported)
+
+    def test_invalid_pdf_fails_with_clear_parse_error(self) -> None:
+        invalid_pdf = Path(self.temp_dir.name) / "invalid.pdf"
+        invalid_pdf.write_bytes(b"not a PDF")
+
+        with self.assertRaisesRegex(
+            DocumentParseError, r"Unable to read PDF document.*invalid\.pdf"
+        ):
+            load_document(invalid_pdf)
 
 
 if __name__ == "__main__":

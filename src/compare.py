@@ -11,7 +11,7 @@ from typing import Iterable
 
 from .audit import load_eval_cases
 from .document_loader import (
-    _available_slug,
+    detect_document_type,
     load_document,
     parse_markdown_sections,
     parse_pdf_sections,
@@ -616,6 +616,28 @@ def compare_documents(
         severity: sum(change["severity"] == severity for change in changes)
         for severity in ("high", "medium", "low")
     }
+    old_type = detect_document_type(old_document)
+    new_type = detect_document_type(new_document)
+
+    def processing_details(
+        document: Path, document_type: str, sections: list[dict]
+    ) -> dict:
+        pages = [section["page_end"] for section in sections if section["page_end"]]
+        return {
+            "file_name": document.name,
+            "document_type": document_type,
+            "analysis_units": len(sections),
+            "page_count": max(pages) if pages else None,
+            "strategy": (
+                "page_by_page_section_chunks"
+                if document_type == "pdf"
+                else "structured_sections_or_bounded_text_chunks"
+            ),
+            "page_bounded_units": document_type == "pdf",
+            "repeated_headers_footers_removed": document_type == "pdf",
+            "full_document_as_single_context": False,
+        }
+
     return {
         "schema_version": 1,
         "mode": "change_impact",
@@ -623,6 +645,12 @@ def compare_documents(
         "compared_documents": {
             "old": str(old_document),
             "new": str(new_document),
+            "old_name": old_document.name,
+            "new_name": new_document.name,
+        },
+        "document_processing": {
+            "old": processing_details(old_document, old_type, old_sections),
+            "new": processing_details(new_document, new_type, new_sections),
         },
         "summary": {
             "old_sections": len(old_sections),
@@ -661,6 +689,10 @@ def render_markdown(result: dict) -> str:
     summary = result["summary"]
     old_doc = result["compared_documents"]["old"]
     new_doc = result["compared_documents"]["new"]
+    processing = result.get("document_processing", {})
+    uses_pdf = any(
+        details.get("document_type") == "pdf" for details in processing.values()
+    )
     lines = [
         "# Policy Change Impact Report",
         "",
@@ -678,6 +710,17 @@ def render_markdown(result: dict) -> str:
         "",
         f"- Old: `{old_doc}` ({summary['old_sections']} parsed sections)",
         f"- New: `{new_doc}` ({summary['new_sections']} parsed sections)",
+        "",
+        "## Processing boundary",
+        "",
+        (
+            "PDF text was extracted page by page into page-bounded section chunks; "
+            "repeated headers and footers were removed where detected. The full PDF "
+            "was **not loaded as one context**."
+            if uses_pdf
+            else "Documents were compared as structured sections or bounded text chunks; "
+            "the full documents were **not loaded as one context**."
+        ),
         "",
         "## Changed sections",
         "",

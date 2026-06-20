@@ -150,7 +150,7 @@ design so automation cannot mistake an unsafe KB for a successful audit.
 Audit artifacts are `metrics.json` and `readiness_report.md` in the selected report
 directory.
 
-## Change Impact: Markdown and large PDF
+## Change Impact: Markdown, plain text, and large PDF
 
 Compare the Markdown policy fixtures:
 
@@ -173,10 +173,11 @@ python -m src.compare \
   --write-report
 ```
 
-Markdown uses H1/H2 structure. PDF loading uses PyMuPDF layout metadata to remove
-repeated headers and footers, identify headings, preserve 1-based page metadata,
-and normalize sections. Comparison is section by section; the complete PDF is
-never loaded as one prompt or context, and Change Impact does not call an LLM.
+Markdown uses H1/H2 structure. Headerless Markdown and `.txt` files are split into
+bounded paragraph chunks. PDF loading uses PyMuPDF layout metadata to remove repeated
+headers and footers, identify headings, preserve 1-based page metadata, and create
+page-bounded section chunks. The complete PDF is never loaded as one prompt or
+context, and Change Impact does not call an LLM.
 
 Both fixture comparisons produce the same baseline: 6 changes, 4 high-risk
 changes, 13 impacted eval cases, and 9 required KB updates. Reports are written as
@@ -220,7 +221,10 @@ streamlit run app.py
 ```
 
 The three tabs expose Ask, Readiness Audit, and Change Impact through the existing
-Python APIs. The UI does not change their gates or scoring behavior.
+Python APIs. Change Impact defaults to the built-in 50-page PDF demo, retains the
+Markdown fixture, and accepts paired `.pdf`, `.md`, or `.txt` uploads. Uploaded source
+files are compared from an operating-system temporary directory and deleted after the
+run; generated JSON and Markdown reports remain available by path and download.
 
 ## Final validation baseline
 
