@@ -30,14 +30,16 @@ cannot be released unless the deterministic validator accepts its citations,
 provenance, and groundedness. Deterministic fake providers demonstrate both the
 allowed and blocked paths without credentials.
 
-Ask Mode applies a small deterministic router before retrieval. Standalone greetings,
-thanks, empty input, and app-introduction questions return a canned capability message
+Ask Mode applies a deterministic positive-admission router before generation.
+Standalone greetings, thanks, and app-introduction questions return a canned capability message
 with `response_type=non_kb_chitchat`. Clearly unrelated general questions such as
 weather, trivia, recipes, sports, or creative requests return a canned scope refusal
-with `response_type=out_of_scope_general`. Neither response retrieves evidence, calls
-an LLM provider, requires citations, or enters readiness metrics. Explicit company,
-support, policy, pricing, and service signals always take the existing retrieval and
-validator path; ambiguous queries default to that path as well.
+with `response_type=out_of_scope_general`. Low-information input is rejected before
+retrieval; meaningful queries without domain signals use retrieval only as a conservative
+relevance probe. Canned responses never call an LLM provider, require citations, or enter
+readiness metrics. Ask Mode uses positive KB admission: queries enter RAG only when
+they contain explicit support-domain signals or pass a retrieval relevance probe;
+otherwise they receive a task-boundary response before retrieval/generation.
 
 ## Quickstart
 

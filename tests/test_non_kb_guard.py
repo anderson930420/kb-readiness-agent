@@ -4,15 +4,17 @@ import unittest
 from unittest.mock import patch
 
 from eval.run_eval import split_non_kb_eval_cases
-from src.answer import answer_question, classify_query
+from src.answer import (
+    answer_question,
+    classify_query,
+    has_sufficient_query_content,
+)
 from src.generation import GeneratedAnswer
 
 
 class NonKBQueryGuardTests(unittest.TestCase):
     def test_canned_queries_skip_retrieval_and_generation(self) -> None:
         queries = (
-            "",
-            "   ",
             "你好",
             "hi",
             "Thanks!",
@@ -44,6 +46,42 @@ class NonKBQueryGuardTests(unittest.TestCase):
         retrieve.assert_not_called()
         generate.assert_not_called()
 
+    def test_low_information_queries_use_task_boundary_without_pipeline_work(self) -> None:
+        queries = (
+            "",
+            "   ",
+            "我",
+            "你",
+            "他",
+            "那個",
+            "可以嗎",
+            "幫我",
+            "我想問",
+            "?",
+            "？？",
+            "what about",
+            "tell me more",
+            "can you",
+            "help me",
+            "I",
+            "me",
+        )
+
+        with patch("src.answer.retrieve") as retrieve, patch(
+            "src.answer.generate_answer"
+        ) as generate, patch("src.answer._generate_and_validate") as validate:
+            for query in queries:
+                with self.subTest(query=query):
+                    self.assertFalse(has_sufficient_query_content(query))
+                    result = answer_question(query, mode="generative")
+                    self.assertEqual(result.response_type, "out_of_scope_general")
+                    self.assertEqual(result.retrieved_chunks, [])
+                    self.assertEqual(result.validator_decision, "not_run")
+
+        retrieve.assert_not_called()
+        generate.assert_not_called()
+        validate.assert_not_called()
+
     def test_app_intro_message_describes_supported_capabilities(self) -> None:
         result = answer_question("你可以做什麼？")
 
@@ -59,6 +97,7 @@ class NonKBQueryGuardTests(unittest.TestCase):
             "How do I bake a cake?",
             "今天天氣如何？",
             "法國的首都是哪裡？",
+            "世界最高的山是什麼？",
         )
 
         with patch("src.answer.retrieve") as retrieve, patch(
@@ -159,8 +198,83 @@ class NonKBQueryGuardTests(unittest.TestCase):
 
         self.assertEqual(retrieve.call_count, len(queries))
 
-    def test_ambiguous_queries_default_to_kb_pipeline(self) -> None:
-        self.assertEqual(classify_query("What does Acme include?"), "kb_answer")
+    def test_domain_signaled_short_queries_enter_kb_pipeline(self) -> None:
+        retrieved = [
+            {
+                "chunk_id": "refund-policy",
+                "doc": "refund_policy.md",
+                "section": "Refunds",
+                "section_zh": "退款",
+                "section_slug": "refunds",
+                "page": None,
+                "score": 4.0,
+                "retrieval_method": "lexical",
+                "text": "Refund policy evidence.",
+            }
+        ]
+
+        with patch("src.answer.retrieve", return_value=retrieved) as retrieve:
+            for query in ("退款？", "SLA?", "pricing", "KB"):
+                with self.subTest(query=query):
+                    result = answer_question(query)
+                    self.assertEqual(result.response_type, "kb_answer")
+
+        self.assertEqual(retrieve.call_count, 4)
+
+    def test_semantic_kb_query_is_admitted_by_high_relevance_probe(self) -> None:
+        query = "購買後多久可以拿回款項？"
+        retrieved = [
+            {
+                "chunk_id": "refund-window",
+                "doc": "refund_policy.md",
+                "section": "Refund window",
+                "section_zh": "退款期限",
+                "section_slug": "standard_refund_window",
+                "page": None,
+                "score": 8.0,
+                "retrieval_method": "lexical",
+                "text": "Customers can receive their money back after an approved request.",
+            }
+        ]
+
+        with patch("src.answer.retrieve", return_value=retrieved) as retrieve:
+            result = answer_question(query)
+
+        retrieve.assert_called_once()
+        self.assertTrue(has_sufficient_query_content(query))
+        self.assertEqual(result.response_type, "kb_answer")
+        self.assertEqual(result.citations[0]["chunk_id"], "refund-window")
+
+    def test_low_relevance_probe_stops_before_generation_and_validator(self) -> None:
+        query = "Explain mountain climbing equipment"
+        retrieved = [
+            {
+                "chunk_id": "weak-match",
+                "doc": "support.md",
+                "section": "General",
+                "section_zh": "一般",
+                "section_slug": "general",
+                "page": None,
+                "score": 2.99,
+                "retrieval_method": "lexical",
+                "text": "Weakly matching support evidence.",
+            }
+        ]
+
+        with patch("src.answer.retrieve", return_value=retrieved) as retrieve, patch(
+            "src.answer.generate_answer"
+        ) as generate, patch("src.answer._generate_and_validate") as validate:
+            result = answer_question(
+                query,
+                mode="generative",
+                llm_provider="fake_hallucination",
+            )
+
+        retrieve.assert_called_once()
+        generate.assert_not_called()
+        validate.assert_not_called()
+        self.assertEqual(result.response_type, "out_of_scope_general")
+        self.assertEqual(result.retrieved_chunks, [])
 
     def test_readiness_partition_excludes_general_queries(self) -> None:
         kb_row = {

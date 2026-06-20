@@ -34,6 +34,15 @@ MIN_RELEVANCE_SCORES: dict[RetrieverName, float] = {
     "dense": 0.2,
     "hybrid": 0.2,
 }
+# Admission is intentionally stricter than answer-time refusal. These values use
+# each retriever's existing score scale: BM25-style lexical scores, cosine dense
+# scores, and the 0..1 normalized hybrid fusion score. Explicit KB signals do not
+# use this probe, but they still pass through the normal relevance/refusal gate.
+KB_ADMISSION_MIN_RELEVANCE_SCORES: dict[RetrieverName, float] = {
+    "lexical": 3.0,
+    "dense": 0.45,
+    "hybrid": 0.70,
+}
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 NUMBER_RE = re.compile(
     r"(?<![\w.])\d+(?:\.\d+)?(?:\s*(?:%|％|days?|business\s+days?|"
@@ -112,10 +121,15 @@ NON_KB_EXACT_QUERIES = frozenset(
     }
 )
 KB_SCOPE_EN_RE = re.compile(
-    r"\b(?:account|api|billing|business|company|contract|customer|discount|"
-    r"enterprise|invoice|migration|onboarding|payment|plan|plans|policy|policies|"
-    r"pricing|privacy|product|quote|refund|renewal|sales|security|service|services|"
-    r"sla|subscription|support|ticket)\b",
+    r"\b(?:account|api|billing|bills?|business|company|contract|customer|discount|"
+    r"enterprise|escalat(?:e|ed|es|ion)|invoice|migration|onboarding|payments?|"
+    r"plans?|polic(?:y|ies)|pricing|prices?|privacy|product|quotes?|refund(?:s|able)?|"
+    r"renewal|sales|security|services?|sla|subscription|support|tickets?|kb|"
+    r"readiness|audit)\b|"
+    r"\b(?:customer\s+support|response\s+times?|knowledge\s*base|data\s+(?:deletion|export)|"
+    r"(?:delete|export)\s+(?:my\s+|the\s+)?data|change\s+impact|"
+    r"document\s+(?:comparison|compare)|compare\s+documents?)\b|"
+    r"\bdata(?:\s+\w+){0,4}\s+(?:delet(?:e|ed|ion)|remov(?:e|ed|al))\b",
     re.IGNORECASE,
 )
 KB_SCOPE_ZH_TERMS = (
@@ -135,19 +149,135 @@ KB_SCOPE_ZH_TERMS = (
     "帳號",
     "帳戶",
     "付款",
+    "帳單",
     "退款",
     "退費",
+    "退錢",
+    "取消訂閱",
     "續約",
     "發票",
     "合約",
     "隱私",
-    "資料",
     "安全",
     "導入",
+    "入門",
     "移轉",
     "工單",
     "業務",
+    "費用",
+    "回覆時間",
+    "升級",
+    "轉交",
+    "人工審查",
+    "資料刪除",
+    "刪除資料",
+    "資料匯出",
+    "匯出資料",
+    "知識庫",
+    "就緒度",
+    "稽核",
+    "上線",
+    "是否可上線",
+    "變更影響",
+    "文件比較",
+    "影響分析",
 )
+ENGLISH_QUERY_FUNCTION_WORDS = frozenset(
+    {
+        "a",
+        "about",
+        "am",
+        "an",
+        "and",
+        "are",
+        "be",
+        "can",
+        "could",
+        "do",
+        "does",
+        "for",
+        "from",
+        "help",
+        "how",
+        "i",
+        "if",
+        "in",
+        "is",
+        "it",
+        "me",
+        "more",
+        "my",
+        "of",
+        "on",
+        "or",
+        "please",
+        "should",
+        "tell",
+        "that",
+        "the",
+        "their",
+        "this",
+        "to",
+        "us",
+        "we",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+    }
+)
+ZH_QUERY_FUNCTION_TERMS = tuple(
+    sorted(
+        (
+            "可以嗎",
+            "我想問",
+            "告訴我",
+            "幫我",
+            "請問",
+            "什麼",
+            "怎麼",
+            "如何",
+            "多久",
+            "是否",
+            "如果",
+            "那個",
+            "這個",
+            "我們",
+            "你們",
+            "他們",
+            "她們",
+            "它們",
+            "可以",
+            "想問",
+            "請",
+            "幫",
+            "問",
+            "說",
+            "我",
+            "你",
+            "他",
+            "她",
+            "它",
+            "這",
+            "那",
+            "個",
+            "嗎",
+            "呢",
+            "吧",
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+QUERY_EN_TOKEN_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?", re.IGNORECASE)
+QUERY_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 OUT_OF_SCOPE_GENERAL_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -162,6 +292,7 @@ OUT_OF_SCOPE_GENERAL_PATTERNS = tuple(
         r"\b(?:what time is it|what(?:'s| is) (?:today's date|the date today))\b",
         r"^what is (?:python|javascript|photosynthesis|quantum physics|gravity)\??$",
         r"^(?:who am i|what is my name|do you know me|what is my identity)$",
+        r"\b(?:highest|tallest)\s+mountain\b",
         r"(?:天氣|氣溫|氣象預報)",
         r"(?:哪一國的首都|的首都是|總統是誰|總理是誰)",
         r"(?:食譜|怎麼煮|怎麼烤|如何烹飪)",
@@ -172,6 +303,7 @@ OUT_OF_SCOPE_GENERAL_PATTERNS = tuple(
         r"(?:最新新聞|今日新聞|新聞頭條)",
         r"(?:現在幾點|今天幾月幾號|今天日期)",
         r"^(?:我是誰|我叫什麼|你知道我是誰嗎|你認識我嗎)$",
+        r"(?:世界|全球).*(?:最高|最巨大).*山",
     )
 )
 
@@ -247,22 +379,80 @@ def is_non_kb_chitchat(question: str) -> bool:
     """Match only a small allowlist of standalone, non-factual interactions."""
 
     normalized = _normalize_non_kb_query(question)
-    return not normalized or normalized in NON_KB_EXACT_QUERIES
+    return normalized in NON_KB_EXACT_QUERIES
+
+
+def has_explicit_kb_signal(question: str) -> bool:
+    """Return whether a query names the support-policy/KB domain explicitly."""
+
+    normalized = _normalize_non_kb_query(question)
+    return bool(
+        KB_SCOPE_EN_RE.search(normalized)
+        or any(term.casefold() in normalized for term in KB_SCOPE_ZH_TERMS)
+    )
+
+
+def has_sufficient_query_content(question: str) -> bool:
+    """Reject low-information prompts using language-independent content signals.
+
+    Domain-signaled queries are handled separately. This gate measures normalized
+    length, content-token count and function-word ratio rather than enumerating
+    every underspecified phrase.
+    """
+
+    normalized = _normalize_non_kb_query(question)
+    if not normalized or not re.search(
+        r"[a-z0-9\u3400-\u4dbf\u4e00-\u9fff]", normalized
+    ):
+        return False
+
+    english_tokens = QUERY_EN_TOKEN_RE.findall(normalized)
+    meaningful_english = [
+        token
+        for token in english_tokens
+        if token not in ENGLISH_QUERY_FUNCTION_WORDS and len(token) > 1
+    ]
+
+    chinese_text = "".join(QUERY_CJK_RE.findall(normalized))
+    meaningful_chinese = chinese_text
+    for term in ZH_QUERY_FUNCTION_TERMS:
+        meaningful_chinese = meaningful_chinese.replace(term, "")
+
+    content_units = len(meaningful_english) + len(meaningful_chinese)
+    if content_units < 2:
+        return False
+
+    total_units = len(english_tokens) + len(chinese_text)
+    return total_units > 0 and content_units / total_units >= 0.30
+
+
+def retrieval_probe_passes(
+    retrieved_chunks: list[SearchResult], retriever: RetrieverName
+) -> bool:
+    """Admit an un-signaled query only when its top retrieval score is strong."""
+
+    return bool(
+        retrieved_chunks
+        and retrieved_chunks[0]["score"]
+        >= KB_ADMISSION_MIN_RELEVANCE_SCORES[retriever]
+    )
 
 
 def classify_query(question: str) -> ResponseType:
-    """Route only clearly identified non-KB queries away from retrieval."""
+    """Classify pre-retrieval routes and KB admission candidates."""
 
     normalized = _normalize_non_kb_query(question)
-    if not normalized or normalized in NON_KB_EXACT_QUERIES:
+    if normalized in NON_KB_EXACT_QUERIES:
         return "non_kb_chitchat"
-    if KB_SCOPE_EN_RE.search(normalized) or any(
-        term in normalized for term in KB_SCOPE_ZH_TERMS
-    ):
+    if has_explicit_kb_signal(normalized):
         return "kb_answer"
     if any(pattern.search(normalized) for pattern in OUT_OF_SCOPE_GENERAL_PATTERNS):
         return "out_of_scope_general"
-    return "kb_answer"
+    return (
+        "kb_answer"
+        if has_sufficient_query_content(normalized)
+        else "out_of_scope_general"
+    )
 
 
 def uses_kb_pipeline(question: str) -> bool:
@@ -740,6 +930,16 @@ def answer_question(
         model_name=model_name,
         cache_dir=cache_dir,
     )
+    if not has_explicit_kb_signal(question) and not retrieval_probe_passes(
+        results, retriever
+    ):
+        return _canned_result(
+            question,
+            retriever=retriever,
+            mode=mode,
+            latency_ms=(perf_counter() - started) * 1000,
+            response_type="out_of_scope_general",
+        )
     result = answer_from_retrieved(
         question,
         results,
