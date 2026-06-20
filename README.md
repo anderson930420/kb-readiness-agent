@@ -253,7 +253,7 @@ run; generated JSON and Markdown reports remain available by path and download.
 
 ```bash
 python -m src.ingest
-python -m unittest discover -s tests
+python -m pytest
 python -m eval.run_eval --retriever hybrid --write-report
 python -m src.compare --old compare_docs/old_refund_policy.md --new compare_docs/new_refund_policy.md
 python -m scripts.build_large_pdf_fixture --old compare_docs/large_old_refund_policy.pdf --new compare_docs/large_new_refund_policy.pdf --pages 50
