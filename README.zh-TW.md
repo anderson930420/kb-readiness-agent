@@ -10,6 +10,20 @@
 
 這是一個範圍明確、以 deterministic（可重現）流程為主的作品集 demo，不是 production-ready 的客服或法務分析系統。
 
+## Demo 影片
+
+**1. 完整功能展示 — 模式、provider、問答與引用**
+切換 retriever／answer mode／provider（`fake_hallucination` 與 `minimax`），提出可回答與
+不可回答的問題，並展示 citation 與 validator 的判決。（約 5 分半）
+
+[![完整功能展示](https://img.youtube.com/vi/YyByXKVbiyU/maxresdefault.jpg)](https://youtu.be/YyByXKVbiyU)
+
+**2. Edge case 處理 — 範圍外與非知識庫問題**
+面對不相關或偏離任務的提問（例如「今天天氣如何」「幫我寫一個 Python script」）時，
+系統如何回應而不是硬掰答案。（約 1 分半）
+
+[![Edge case 處理](https://img.youtube.com/vi/QG-6bGVLawQ/maxresdefault.jpg)](https://youtu.be/QG-6bGVLawQ)
+
 ## Demo 情境
 
 Demo 使用一組虛構的 SaaS 客服知識庫，內容包括：

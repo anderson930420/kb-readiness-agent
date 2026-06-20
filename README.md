@@ -15,6 +15,21 @@ can answer, when it should refuse, and when a human should review the knowledge
 base. It is a focused, deterministic take-home demonstration, not a production
 support or legal-analysis system.
 
+## Demo Videos
+
+**1. Full walkthrough — modes, providers, Q&A, and citations**
+Switching retriever / answer mode / provider (`fake_hallucination` and `minimax`),
+asking supported and unsupported questions, and showing citations and the validator
+decision. (~5.5 min)
+
+[![Full walkthrough demo](https://img.youtube.com/vi/YyByXKVbiyU/maxresdefault.jpg)](https://youtu.be/YyByXKVbiyU)
+
+**2. Edge-case handling — out-of-scope and non-KB queries**
+How the system responds to unrelated or off-task prompts (e.g. "today's weather",
+"write me a Python script") instead of hallucinating an answer. (~1.5 min)
+
+[![Edge-case handling demo](https://img.youtube.com/vi/QG-6bGVLawQ/maxresdefault.jpg)](https://youtu.be/QG-6bGVLawQ)
+
 ## Demo Scenario
 
 The demo uses a fictional SaaS customer-support knowledge base.
